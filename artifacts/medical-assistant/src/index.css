@@ -1,0 +1,439 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-card-border: hsl(var(--card-border));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --font-sans: var(--app-font-sans);
+  --font-serif: var(--app-font-serif);
+  --font-mono: var(--app-font-mono);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --background: 190 45% 96%;
+  --foreground: 198 31% 17%;
+  --border: 166 20% 87%;
+  --input: 166 20% 87%;
+  --ring: 166 51% 41%;
+  --card: 0 0% 100%;
+  --card-foreground: 198 31% 17%;
+  --card-border: 166 20% 88%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 198 31% 17%;
+  --primary: 166 51% 35%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 165 35% 92%;
+  --secondary-foreground: 166 51% 25%;
+  --muted: 165 24% 93%;
+  --muted-foreground: 198 14% 47%;
+  --accent: 38 74% 87%;
+  --accent-foreground: 31 55% 28%;
+  --destructive: 4 68% 46%;
+  --destructive-foreground: 0 0% 100%;
+  --app-font-sans: 'DM Sans', sans-serif;
+  --app-font-serif: Georgia, serif;
+  --app-font-mono: 'DM Sans', monospace;
+  --radius: 0.8rem;
+  --elevate-1: rgba(21, 93, 80, 0.045);
+  --elevate-2: rgba(21, 93, 80, 0.085);
+}
+
+.dark {
+  --background: 200 20% 9%; /* #12181B deep dark slate/charcoal navy-gray */
+  --foreground: 200 15% 90%; /* off-white/light gray */
+  --border: 200 15% 22%; /* subtle borders */
+  --input: 200 15% 22%;
+  --ring: 168 70% 40%;
+  --card: 200 18% 13%; /* #1a2429 slightly lighter dark gray */
+  --card-foreground: 200 15% 90%;
+  --card-border: 200 15% 22%;
+  --popover: 200 18% 13%;
+  --popover-foreground: 200 15% 90%;
+  --primary: 168 70% 36%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 200 16% 18%;
+  --secondary-foreground: 168 60% 85%;
+  --muted: 200 16% 16%;
+  --muted-foreground: 200 10% 65%;
+  --accent: 38 48% 24%;
+  --accent-foreground: 38 74% 87%;
+  --destructive: 4 62% 54%;
+  --destructive-foreground: 0 0% 100%;
+  --app-font-sans: 'DM Sans', sans-serif;
+  --app-font-serif: Georgia, serif;
+  --app-font-mono: 'DM Sans', monospace;
+  --radius: 0.8rem;
+  --elevate-1: rgba(0, 0, 0, 0.25);
+  --elevate-2: rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+@layer base {
+  * { @apply border-border; }
+  html { scroll-behavior: smooth; }
+  body { @apply font-sans antialiased bg-background text-foreground; }
+  button, input { font: inherit; }
+}
+
+@keyframes rise-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes soft-pulse {
+  0%, 100% { opacity: .5; }
+  50% { opacity: 1; }
+}
+@keyframes arrow-nudge-left {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(-3px); }
+}
+@keyframes arrow-nudge-right {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(3px); }
+}
+.rise-in { animation: rise-in .55s cubic-bezier(.22,1,.36,1) both; }
+.soft-pulse { animation: soft-pulse 1.5s ease-in-out infinite; }
+.arrow-nudge-left { animation: arrow-nudge-left 1.8s ease-in-out infinite; }
+.arrow-nudge-right { animation: arrow-nudge-right 1.8s ease-in-out infinite; }
+.font-display { font-family: 'Manrope', sans-serif; }
+.focus-ring:focus-visible { outline: 3px solid hsl(var(--ring) / .28); outline-offset: 3px; }
+.surface-shadow { box-shadow: 0 18px 50px rgba(23, 69, 62, .07), 0 2px 8px rgba(23, 69, 62, .04); }
+.dotted-grid {
+  background-image: radial-gradient(hsl(var(--primary) / .12) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+.large-text :is(p, button, a, li) { font-size: 1.08em; }
+.large-text :is(h1, h2, h3) { font-size: 1.05em; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; }
+}
+
+@media print {
+  body { background: #fff !important; }
+  body * { visibility: hidden !important; }
+  [data-print-result], [data-print-result] * { visibility: visible !important; }
+  [data-print-result] {
+    position: absolute !important;
+    inset: 0 !important;
+    width: 100% !important;
+    border: 0 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+  [data-print-hide] { display: none !important; }
+}
+
+/* ==========================================================================
+   Comprehensive Dark Theme Styles
+   ========================================================================== */
+
+/* Overall App Background and Card Surface */
+.dark body {
+  background-color: #12181B !important;
+  color: #e2e8f0 !important;
+}
+
+.dark .surface-shadow {
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+}
+
+/* Base Cards & Sections */
+.dark .bg-white,
+.dark .bg-white\/75,
+.dark .bg-white\/70,
+.dark .bg-white\/95 {
+  background-color: #1a2429 !important;
+  border-color: #273740 !important;
+}
+
+.dark .border-\[\#dcebe6\],
+.dark .border-\[\#dcebe5\],
+.dark .border-\[\#d9eaee\],
+.dark .border-\[\#d6e7eb\],
+.dark .border-\[\#cfe3dc\],
+.dark .border-\[\#dfece7\],
+.dark .border-\[\#dfebe7\],
+.dark .border-\[\#e5efeb\],
+.dark .border-\[\#e0ece8\],
+.dark .border-\[\#d9e1e5\],
+.dark .border-\[\#c8e1ea\],
+.dark .border-\[\#c9e2da\],
+.dark .border-\[\#a9d1c5\],
+.dark .border-\[\#edf2ef\] {
+  border-color: #273740 !important;
+}
+
+/* Card inner header rows & containers */
+.dark .bg-\[\#f8fcfa\],
+.dark .bg-\[\#f5fbfc\],
+.dark .bg-\[\#f3f8f6\],
+.dark .bg-\[\#f6fcfa\],
+.dark .bg-\[\#f5f8f9\],
+.dark .bg-\[\#f1f6f4\],
+.dark .bg-\[\#edf7f3\] {
+  background-color: #151e23 !important;
+}
+
+/* Headings in dark mode (off-white for readability, not pure white) */
+.dark .text-\[\#183f3a\],
+.dark .text-\[\#1c403b\],
+.dark .text-\[\#173d37\],
+.dark .text-\[\#2b5148\],
+.dark .text-\[\#2d534b\],
+.dark .text-\[\#3a5d55\],
+.dark .text-\[\#24564d\],
+.dark .text-\[\#163630\],
+.dark .text-\[\#2c5967\] {
+  color: #e5edf0 !important;
+}
+
+/* Muted / Secondary Body Text in dark mode */
+.dark .text-\[\#5f7a82\],
+.dark .text-\[\#62808a\],
+.dark .text-\[\#557680\],
+.dark .text-\[\#607a74\],
+.dark .text-\[\#728b85\],
+.dark .text-\[\#718d85\],
+.dark .text-\[\#78958d\],
+.dark .text-\[\#64847c\],
+.dark .text-\[\#91aaa4\],
+.dark .text-\[\#88a19b\],
+.dark .text-\[\#89a49d\],
+.dark .text-\[\#92aaa4\],
+.dark .text-\[\#9ab2ac\],
+.dark .text-\[\#6d7f88\],
+.dark .text-\[\#55756c\],
+.dark .text-\[\#55756d\],
+.dark .text-\[\#47756b\],
+.dark .text-\[\#3f7787\],
+.dark .text-\[\#367586\],
+.dark .text-\[\#6e8a96\],
+.dark .text-\[\#526a74\] {
+  color: #9cb2b9 !important;
+}
+
+/* Teal/Green Brand Accent buttons and highlights */
+.dark .bg-\[\#075e54\] {
+  background-color: #0c6b60 !important;
+  color: #ffffff !important;
+}
+.dark .bg-\[\#075e54\]:hover {
+  background-color: #0e7d70 !important;
+}
+.dark .text-\[\#075e54\],
+.dark .text-\[\#0b7665\],
+.dark .text-\[\#16836d\],
+.dark .text-\[\#19836e\],
+.dark .text-\[\#3b917c\],
+.dark .text-\[\#2c9278\],
+.dark .text-\[\#4e9986\],
+.dark .text-\[\#27685b\] {
+  color: #38c8a8 !important;
+}
+.dark .bg-\[\#e6f5ef\],
+.dark .bg-\[\#dff4ed\],
+.dark .bg-\[\#eaf8f2\],
+.dark .bg-\[\#dff3eb\] {
+  background-color: #14322a !important;
+  color: #5eead4 !important;
+}
+
+/* ==========================================================================
+   Section Accent Colors (What it helps with, How to use, Dosage, Important notes)
+   Muted/darker variants that look distinct without glowing harshly
+   ========================================================================== */
+
+/* 1. What it helps with / Treats (Teal/Green) */
+.dark .border-\[\#57b396\] {
+  border-color: #2e7d69 !important;
+}
+.dark .border-\[\#57b396\].bg-\[\#f8fcfa\],
+.dark .bg-\[\#f8fcfa\].border-\[\#57b396\] {
+  background-color: #132420 !important;
+}
+.dark .text-\[\#277f6b\] {
+  color: #4ed2af !important;
+}
+.dark .text-\[\#244f47\] {
+  color: #d6f6ed !important;
+}
+
+/* 2. How to use (Blue) */
+.dark .border-\[\#78b7ca\] {
+  border-color: #397486 !important;
+}
+.dark .border-\[\#78b7ca\].bg-\[\#f2f9fc\],
+.dark .bg-\[\#f2f9fc\].border-\[\#78b7ca\] {
+  background-color: #12222b !important;
+}
+.dark .text-\[\#397e91\] {
+  color: #5bc1dc !important;
+}
+.dark .text-\[\#314b49\] {
+  color: #d3edf5 !important;
+}
+
+/* 3. Dosage (Gold) */
+.dark .border-\[\#d6b34f\] {
+  border-color: #8c732f !important;
+}
+.dark .border-\[\#d6b34f\].bg-\[\#fffbf2\],
+.dark .bg-\[\#fffbf2\].border-\[\#d6b34f\] {
+  background-color: #241e10 !important;
+}
+.dark .text-\[\#987325\],
+.dark .text-\[\#997126\] {
+  color: #e2ba58 !important;
+}
+
+/* 4. Important Notes (Purple) */
+.dark .border-\[\#b8a3c8\] {
+  border-color: #725985 !important;
+}
+.dark .border-\[\#b8a3c8\].bg-\[\#fbf8fd\],
+.dark .bg-\[\#fbf8fd\].border-\[\#b8a3c8\] {
+  background-color: #201728 !important;
+}
+.dark .text-\[\#76618c\] {
+  color: #c1a0e0 !important;
+}
+.dark .text-\[\#443b4d\] {
+  color: #ecdcf9 !important;
+}
+.dark .bg-\[\#8e76a5\] {
+  background-color: #9f7fc2 !important;
+}
+
+/* Expiry Check Aside & Pills */
+.dark .bg-\[\#fbfdfc\] {
+  background-color: #162025 !important;
+}
+.dark .border-\[\#e6efeb\] {
+  border-color: #273740 !important;
+}
+.dark .text-\[\#674b52\] {
+  color: #d49ba6 !important;
+}
+.dark .text-\[\#80636a\],
+.dark .text-\[\#8d626c\] {
+  color: #bfa1a8 !important;
+}
+.dark .text-\[\#355c53\] {
+  color: #86dfcb !important;
+}
+
+/* Expiry Status Badges */
+.dark .bg-\[\#fff8e8\] {
+  background-color: #2d2411 !important;
+  color: #e2ba58 !important;
+}
+.dark .bg-\[\#fff0ed\] {
+  background-color: #2e1515 !important;
+  color: #f87171 !important;
+}
+
+/* Form Controls: Selects, Inputs */
+.dark select,
+.dark input {
+  background-color: #172126 !important;
+  color: #e5edf0 !important;
+  border-color: #283a43 !important;
+}
+.dark select:focus,
+.dark input:focus {
+  border-color: #38c8a8 !important;
+}
+
+/* Dotted Grid Uploader */
+.dark .dotted-grid {
+  background-image: radial-gradient(hsl(168 70% 40% / 0.15) 1px, transparent 1px) !important;
+  background-color: #141d22 !important;
+  border-color: #273a44 !important;
+}
+
+/* Onboarding & Alert Banners */
+.dark .bg-\[\#e4f6f9\] {
+  background-color: #132731 !important;
+  border-color: #204555 !important;
+  color: #6ec5d8 !important;
+}
+.dark .bg-\[\#fff4f1\] {
+  background-color: #2b1716 !important;
+  border-color: #572723 !important;
+  color: #fca5a5 !important;
+}
+.dark .bg-\[\#f3f9fd\] {
+  background-color: #14232c !important;
+  border-color: #233e4d !important;
+}
+.dark .bg-\[\#e0f0fa\] {
+  background-color: #1c3240 !important;
+  color: #6ec5d8 !important;
+}
+
+/* Emergency Helpline Card */
+.dark [data-testid="card-emergency-helpline"] {
+  background-color: #251614 !important;
+  border-color: #522924 !important;
+}
+.dark [data-testid="card-emergency-helpline"] .bg-\[\#fce3d9\] {
+  background-color: #401f1a !important;
+  color: #f87171 !important;
+}
+.dark [data-testid="card-emergency-helpline"] a {
+  background-color: #331c19 !important;
+  border-color: #63322c !important;
+  color: #fca5a5 !important;
+}
+.dark [data-testid="card-emergency-helpline"] a:hover {
+  background-color: #3d201c !important;
+}
+
+/* Read Aloud controls */
+.dark .bg-\[\#f4fafc\] {
+  background-color: #142127 !important;
+  border-color: #273740 !important;
+}
+.dark .bg-\[\#eff5ff\] {
+  background-color: #152438 !important;
+  color: #60a5fa !important;
+  border-color: #254166 !important;
+}
+.dark .bg-\[\#fff5f4\] {
+  background-color: #291717 !important;
+  color: #f87171 !important;
+  border-color: #552828 !important;
+}
+
+/* History filter & cards */
+.dark .bg-\[\#f3fafc\],
+.dark .bg-\[\#f2f9fc\] {
+  background-color: #142127 !important;
+  border-color: #273740 !important;
+  color: #5bc1dc !important;
+}

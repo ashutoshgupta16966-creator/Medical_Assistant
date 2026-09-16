@@ -1,0 +1,21 @@
+{
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
+  "scripts": {
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --if-present run typecheck",
+    "start": "pnpm --filter @workspace/api-server start",
+    "start:client": "pnpm --filter @workspace/medical-assistant serve",
+    "dev:api": "pnpm --filter @workspace/api-server dev",
+    "dev:client": "pnpm --filter @workspace/medical-assistant dev",
+    "test": "pnpm --filter @workspace/medical-assistant run test"
+  },
+  "private": true,
+  "devDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.63.2",
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
+  }
+}

@@ -1,0 +1,11 @@
+﻿{
+  "buildCommand": "pnpm --filter @workspace/medical-assistant run build",
+  "outputDirectory": "artifacts/medical-assistant/dist/public",
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}

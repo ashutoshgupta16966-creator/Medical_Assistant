@@ -1,0 +1,212 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: scanner
+    description: Medicine and lab report analysis
+  - name: assistant
+    description: General health guidance
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /analyze:
+    post:
+      operationId: analyzeScan
+      tags: [scanner]
+      summary: Analyze a medicine strip, box, or lab report
+      description: Sends an uploaded image to the configured vision model and returns a plain-language medical explanation with expiry risk.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScanInput"
+      responses:
+        "200":
+          description: Analysis completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanAnalysis"
+        "400":
+          description: Invalid image payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "408":
+          description: Analysis timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Vision model unavailable or returned invalid output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /chat:
+    post:
+      operationId: chatHealth
+      tags: [assistant]
+      summary: Answer a general health question
+      description: Sends a plain-language health concern to the configured text model and returns bilingual, safety-first guidance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatInput"
+      responses:
+        "200":
+          description: Guidance generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatResponse"
+        "400":
+          description: Invalid question
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "408":
+          description: Chat response timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: Text model unavailable or returned invalid output
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    ScanInput:
+      type: object
+      properties:
+        imageData:
+          type: string
+          minLength: 20
+          description: Base64-encoded image data, with or without a data URL prefix
+        mimeType:
+          type: string
+          enum: [image/jpeg, image/png, image/webp, image/heic, image/heif]
+      required: [imageData, mimeType]
+    ScanAnalysis:
+      type: object
+      properties:
+        category:
+          type: string
+          enum: [medicine, lab_report, unknown]
+        nameEnglish:
+          type: string
+        nameHindi:
+          type: string
+        treatsEnglish:
+          type: string
+        treatsHindi:
+          type: string
+        usage:
+          type: string
+        usageHindi:
+          type: string
+        dosage:
+          type: string
+        dosageHindi:
+          type: string
+        expiryDate:
+          type: ["string", "null"]
+          description: ISO date when available
+        expiryStatus:
+          type: string
+          enum: [danger, soon, safe, unknown]
+        expiryLabel:
+          type: string
+        expiryLabelHindi:
+          type: string
+        confidence:
+          type: number
+          minimum: 0
+          maximum: 1
+        notes:
+          type: array
+          items:
+            type: string
+        notesHindi:
+          type: array
+          items:
+            type: string
+      required:
+        - category
+        - nameEnglish
+        - nameHindi
+        - treatsEnglish
+        - treatsHindi
+        - usage
+        - usageHindi
+        - dosage
+        - dosageHindi
+        - expiryDate
+        - expiryStatus
+        - expiryLabel
+        - expiryLabelHindi
+        - confidence
+        - notes
+        - notesHindi
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    ChatInput:
+      type: object
+      properties:
+        message:
+          type: string
+          minLength: 2
+          maxLength: 2000
+      required: [message]
+    ChatResponse:
+      type: object
+      properties:
+        answerEnglish:
+          type: string
+        answerHindi:
+          type: string
+        disclaimerEnglish:
+          type: string
+        disclaimerHindi:
+          type: string
+      required: [answerEnglish, answerHindi, disclaimerEnglish, disclaimerHindi]
+
