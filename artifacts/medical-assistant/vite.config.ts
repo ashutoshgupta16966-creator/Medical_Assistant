@@ -3,15 +3,11 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
-const rawPort = process.env.PORT || '3000';
-const port = Number(rawPort);
-
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
-
 const basePath = process.env.BASE_PATH || '/';
 const apiTarget = process.env.API_SERVER_URL || 'http://localhost:5000';
+
+// Provide fallback value if PORT is missing during static build time (e.g. on Vercel / CI)
+const PORT = Number(process.env.PORT) || 3000;
 
 export default defineConfig({
   base: basePath,
@@ -31,8 +27,8 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port,
-    strictPort: true,
+    port: PORT,
+    strictPort: false,
     host: '0.0.0.0',
     allowedHosts: true,
     fs: {
@@ -46,9 +42,8 @@ export default defineConfig({
     },
   },
   preview: {
-    port,
+    port: PORT,
     host: '0.0.0.0',
     allowedHosts: true,
   },
 });
-

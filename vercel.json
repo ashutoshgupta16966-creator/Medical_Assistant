@@ -1,7 +1,7 @@
-﻿{
-  "buildCommand": "pnpm --filter @workspace/medical-assistant run build",
+{
+  "installCommand": "pnpm install --frozen-lockfile",
+  "buildCommand": "pnpm run build",
   "outputDirectory": "artifacts/medical-assistant/dist/public",
-  "framework": "vite",
   "rewrites": [
     {
       "source": "/(.*)",
@@ -9,3 +9,4 @@
     }
   ]
 }
+
