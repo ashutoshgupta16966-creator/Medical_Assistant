@@ -14,5 +14,8 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
     css: false,
+    // Use threads pool (worker_threads) instead of forks (child_process.fork)
+    // to avoid Windows-specific startup timeouts in CI / low-resource environments.
+    pool: 'threads',
   },
 });

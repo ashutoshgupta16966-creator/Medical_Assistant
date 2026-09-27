@@ -130,6 +130,17 @@ router.post("/analyze", async (req, res) => {
   const { imageData, mimeType } = parsed.data;
   const base64 = imageData.replace(/^data:[^;]+;base64,/, "");
 
+  // Enforce ~4 MB image cap (Vercel serverless payload ceiling is 4.5 MB total)
+  const estimatedBytes = Math.ceil((base64.length * 3) / 4);
+  const MAX_BYTES = 4 * 1024 * 1024; // 4 MB
+  if (estimatedBytes > MAX_BYTES) {
+    res.status(413).json({
+      error: "That image is too large to analyze (limit: 4 MB). Please resize or compress it before uploading.",
+    });
+    return;
+  }
+
+
   try {
     let rawText: string;
     try {
