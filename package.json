@@ -19,7 +19,6 @@
     "test": "npm run test --workspace=@workspace/medical-assistant"
   },
   "devDependencies": {
-    "@rollup/rollup-win32-x64-msvc": "^4.63.2",
     "prettier": "^3.9.6",
     "typescript": "~5.9.3"
   },
