@@ -2,21 +2,30 @@
   "name": "workspace",
   "version": "0.0.0",
   "license": "MIT",
-  "scripts": {
-    "build": "pnpm --filter @workspace/medical-assistant run build",
-    "build:all": "pnpm run typecheck && pnpm -r --if-present run build",
-    "typecheck:libs": "tsc --build",
-    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --if-present run typecheck",
-    "start": "pnpm --filter @workspace/api-server start",
-    "start:client": "pnpm --filter @workspace/medical-assistant serve",
-    "dev:api": "pnpm --filter @workspace/api-server dev",
-    "dev:client": "pnpm --filter @workspace/medical-assistant dev",
-    "test": "pnpm --filter @workspace/medical-assistant run test"
-  },
   "private": true,
+  "workspaces": [
+    "artifacts/*",
+    "lib/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace=@workspace/medical-assistant",
+    "build:all": "npm run typecheck && npm run build --workspaces --if-present",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "npm run typecheck:libs && npm run typecheck --workspaces --if-present",
+    "start": "npm run start --workspace=@workspace/api-server",
+    "start:client": "npm run serve --workspace=@workspace/medical-assistant",
+    "dev:api": "npm run dev --workspace=@workspace/api-server",
+    "dev:client": "npm run dev --workspace=@workspace/medical-assistant",
+    "test": "npm run test --workspace=@workspace/medical-assistant"
+  },
   "devDependencies": {
     "@rollup/rollup-win32-x64-msvc": "^4.63.2",
     "prettier": "^3.9.6",
     "typescript": "~5.9.3"
+  },
+  "overrides": {
+    "esbuild-plugin-pino": {
+      "esbuild": "$esbuild"
+    }
   }
 }

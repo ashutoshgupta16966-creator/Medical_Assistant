@@ -1,10 +1,10 @@
-﻿services:
+services:
   - type: web
     name: medical-assistant
     runtime: node
     plan: free
-    buildCommand: pnpm install --frozen-lockfile && pnpm run build
-    startCommand: pnpm start
+    buildCommand: npm install && npm run build
+    startCommand: npm start
     healthCheckPath: /api/healthz
     envVars:
       - key: NODE_ENV

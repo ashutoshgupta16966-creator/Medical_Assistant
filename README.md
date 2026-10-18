@@ -1,4 +1,4 @@
-﻿# Medical Assistant
+# Medical Assistant
 
 Medical Assistant turns medicine strips, boxes, and lab reports into clear, plain-language guidance with expiry-risk checks, bilingual (English/Hindi) support, medication reminders, and general health chat.
 
@@ -17,43 +17,43 @@ Medical Assistant turns medicine strips, boxes, and lab reports into clear, plai
 
 ### Prerequisites
 
-- Node.js 20+ (tested on Node 24)
-- pnpm 9+ (`npm install -g pnpm`)
+- Node.js 20+ (tested on Node 22/24)
+- npm 9+
 - Google Gemini API key (`GEMINI_API_KEY`)
 
 ### Installation
 
 ```bash
-pnpm install
+npm install
 ```
 
 ### Local Development
 
 1. **Start the API server** (runs on port 5000):
    ```bash
-   pnpm run dev:api
+   npm run dev:api
    ```
 
 2. **Start the frontend app** (runs on port 3000, proxies `/api` to 5000):
    ```bash
-   pnpm run dev:client
+   npm run dev:client
    ```
 
 ### Testing & Verification
 
 - Run test suite (Vitest):
   ```bash
-  pnpm run test
+  npm run test
   ```
 
 - Run typecheck:
   ```bash
-  pnpm run typecheck
+  npm run typecheck
   ```
 
 - Run production build:
   ```bash
-  pnpm run build
+  npm run build
   ```
 
 ---
@@ -67,8 +67,8 @@ Render can build and run both the frontend and backend in a single Web Service.
 1. Create a new **Web Service** on [Render](https://render.com) connected to your repository (or use the provided `render.yaml` Blueprint).
 2. Configure settings:
    - **Environment**: `Node`
-   - **Build Command**: `pnpm install --frozen-lockfile && pnpm run build`
-   - **Start Command**: `pnpm start`
+   - **Build Command**: `npm install && npm run build`
+   - **Start Command**: `npm start`
    - **Health Check Path**: `/api/healthz`
 3. Add Environment Variables:
    - `GEMINI_API_KEY`: Your Google Gemini API Key.
@@ -82,7 +82,7 @@ The API server automatically serves the built frontend SPA at `/` and handles al
 If you prefer to deploy the static frontend on Vercel and the Express API on Render:
 
 1. **Backend on Render**:
-   - Follow Option 1 above, but set the backend start command to run `pnpm --filter @workspace/api-server start`.
+   - Follow Option 1 above, but set the backend start command to run `npm run start --workspace=@workspace/api-server`.
    - Copy your Render backend URL (e.g. `https://medical-assistant-api.onrender.com`).
 
 2. **Frontend on Vercel**:
@@ -126,5 +126,5 @@ Medical_Assistant/
 │   └── api-zod/                # Zod schemas for runtime request/response validation
 ├── render.yaml                 # Render Blueprint configuration
 ├── vercel.json                 # Vercel SPA configuration
-└── pnpm-workspace.yaml         # Workspace package configuration
+└── package.json                # Root workspace configuration
 ```
