@@ -122,38 +122,45 @@ function MessageBubble({
       aria-label={`${isUser ? strings.you : strings.assistant}: ${message.message}`}
     >
       {!isUser && (
-        <div
-          className="mt-1 flex size-9 shrink-0 items-center justify-center rounded-2xl bg-[hsl(var(--secondary))] text-[hsl(var(--primary))]"
-          aria-hidden="true"
-        >
-          <Stethoscope className="size-[18px]" strokeWidth={1.8} />
+        <div className="mt-1 flex flex-col items-center gap-1.5 shrink-0">
+          <div
+            className="flex size-9 items-center justify-center rounded-2xl bg-[hsl(var(--secondary))] text-[hsl(var(--primary))]"
+            aria-hidden="true"
+          >
+            <Stethoscope className="size-[18px]" strokeWidth={1.8} />
+          </div>
+          <button
+            type="button"
+            onClick={onReadAloud}
+            className={`focus-ring inline-flex size-8 items-center justify-center rounded-full border transition-colors ${
+              isSpeaking
+                ? 'border-red-200 bg-red-50 text-red-600 hover:bg-red-100 dark:border-red-900/50 dark:bg-red-950/40 dark:text-red-400 dark:hover:bg-red-900/40'
+                : 'border-blue-200 bg-blue-50/70 text-blue-600 hover:bg-blue-100/80 dark:border-blue-900/50 dark:bg-blue-950/40 dark:text-blue-400 dark:hover:bg-blue-900/40'
+            }`}
+            aria-label={isSpeaking ? 'Stop reading this response' : 'Read this response aloud'}
+            aria-pressed={isSpeaking}
+            title={isSpeaking ? 'Stop reading' : 'Read aloud'}
+            data-testid={`button-read-message-${message.id}`}
+          >
+            {isSpeaking ? (
+              <VolumeX className="size-4" aria-hidden="true" />
+            ) : (
+              <Volume2 className="size-4" aria-hidden="true" />
+            )}
+          </button>
         </div>
       )}
-       <div className={`max-w-[min(680px,86%)] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
-         <div className="flex items-end gap-2">
-           <div
-             className={`rounded-[1.35rem] px-4 py-3.5 text-[0.94rem] leading-7 shadow-[0_6px_20px_rgba(24,80,70,0.045)] ${
-               isUser
-                 ? 'rounded-br-md bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]'
-                 : 'rounded-bl-md border border-[hsl(var(--card-border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))]'
-             }`}
-             data-testid={`text-message-${message.id}`}
-           >
-              <p className="whitespace-pre-wrap">{isUser ? message.message : (language === 'hi' ? message.messageHindi : message.messageEnglish) || message.message}</p>
-           </div>
-           {!isUser && (
-             <button
-               type="button"
-               onClick={onReadAloud}
-               className="focus-ring mb-1 inline-flex size-8 shrink-0 items-center justify-center rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--background))] text-[hsl(var(--primary))] transition-colors hover:bg-[hsl(var(--secondary))]"
-               aria-label={isSpeaking ? 'Stop reading this response' : 'Read this response aloud'}
-               aria-pressed={isSpeaking}
-               data-testid={`button-read-message-${message.id}`}
-             >
-               {isSpeaking ? <VolumeX className="size-4" aria-hidden="true" /> : <Volume2 className="size-4" aria-hidden="true" />}
-             </button>
-           )}
-         </div>
+      <div className={`max-w-[min(680px,86%)] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
+        <div
+          className={`rounded-[1.35rem] px-4 py-3.5 text-[0.94rem] leading-7 shadow-[0_6px_20px_rgba(24,80,70,0.045)] ${
+            isUser
+              ? 'rounded-br-md bg-[hsl(var(--primary))] text-[hsl(var(--primary-foreground))]'
+              : 'rounded-bl-md border border-[hsl(var(--card-border))] bg-[hsl(var(--card))] text-[hsl(var(--foreground))]'
+          }`}
+          data-testid={`text-message-${message.id}`}
+        >
+          <p className="whitespace-pre-wrap">{isUser ? message.message : (language === 'hi' ? message.messageHindi : message.messageEnglish) || message.message}</p>
+        </div>
         <div
           className={`mt-1.5 px-1 text-[0.69rem] font-medium uppercase tracking-[0.12em] text-[hsl(var(--muted-foreground))] ${
             isUser ? 'text-right' : 'text-left'
