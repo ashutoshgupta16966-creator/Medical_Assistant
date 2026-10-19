@@ -27,7 +27,7 @@
 
 ### **Backend & API**
 - **Server**: Node.js / Express API Server (`api-server`)
-- **AI Models**: Google Gemini Vision API (`gemini-3.7-flash` / fallback models)
+- **AI Models**: Google Gemini Vision API 
 - **API Specs**: API Client with Zod validation (`api-client-react`)
 
 ---
