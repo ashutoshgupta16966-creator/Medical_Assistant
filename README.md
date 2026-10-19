@@ -1,130 +1,60 @@
-# Medical Assistant
+# 🏥 Medical Assistant
 
-Medical Assistant turns medicine strips, boxes, and lab reports into clear, plain-language guidance with expiry-risk checks, bilingual (English/Hindi) support, medication reminders, and general health chat.
-
-## Features
-
-- **Scan & Vision Analysis**: Upload or capture an image of medicine strips, boxes, or lab reports to analyze with Gemini Vision (`gemini-3.7-flash` or fallback).
-- **Expiry Risk Assessment**: Automatic expiry detection categorized into danger (expired / within 7 days), use soon (8–15 days), or safe (>15 days).
-- **Bilingual Results (English & Hindi)**: Seamless toggle for all analysis results, usage instructions, dosage notes, disclaimers, and chat guidance.
-- **Privacy by Design**: Scans and images remain strictly in browser session memory—no medical images are persisted to external databases.
-- **Health Assistant Chat**: Safe, text-based chat for general health guidance, symptoms, and home-care suggestions with built-in red-flag safety disclaimers.
-- **Medication Reminders**: Automatic frequency extraction (once/twice/thrice daily) with upcoming dosage schedules.
+> An AI-powered health and medication assistant that converts medicine strips, boxes, and lab reports into clear, plain-language guidance with expiry-risk evaluation, bilingual support, medication reminders, and interactive health chat.
 
 ---
 
-## Getting Started
+## ✨ Features
 
-### Prerequisites
-
-- Node.js 20+ (tested on Node 22/24)
-- npm 9+
-- Google Gemini API key (`GEMINI_API_KEY`)
-
-### Installation
-
-```bash
-npm install
-```
-
-### Local Development
-
-1. **Start the API server** (runs on port 5000):
-   ```bash
-   npm run dev:api
-   ```
-
-2. **Start the frontend app** (runs on port 3000, proxies `/api` to 5000):
-   ```bash
-   npm run dev:client
-   ```
-
-### Testing & Verification
-
-- Run test suite (Vitest):
-  ```bash
-  npm run test
-  ```
-
-- Run typecheck:
-  ```bash
-  npm run typecheck
-  ```
-
-- Run production build:
-  ```bash
-  npm run build
-  ```
+- 📸 **Scan & Vision Analysis**: Upload or capture images of medicine strips, packaging, or lab reports for analysis and understanding.
+- ⏳ **Expiry Risk Assessment**: Automatic expiry detection categorized into clear risk levels:
+  - 🔴 **Danger**: Expired or expiring within 7 days
+  - 🟡 **Use Soon**: Expiring within 8–15 days
+  - 🟢 **Safe**: Valid for >15 days
+- 🌐 **Bilingual Results (English & Hindi)**: Seamless toggle for all analysis results, dosage instructions, usage notes, and health advice.
+- 💬 **Health Assistant Chat**: Interactive AI chat for general health guidance, symptom queries, and home-care suggestions with safety disclaimers.
+- 🔔 **Medication Reminders**: Automated frequency extraction (once/twice/thrice daily) with upcoming dosage tracking.
+- 🔒 **Privacy by Design**: All scanned images and medical records remain strictly in browser session memory—no medical images are stored on external databases.
 
 ---
 
-## Deployment Guide
+## 🛠️ Tech Stack
 
-### Option 1: Unified Fullstack on Render (Recommended)
+### **Frontend**
+- **Framework**: React.js with TypeScript & Vite
+- **UI Components & Styling**: Tailwind CSS, Lucide Icons, Shadcn UI (`components.json`)
+- **State Management & Validation**: Zod (`api-zod`), React Hooks
 
-Render can build and run both the frontend and backend in a single Web Service.
+### **Backend & API**
+- **Server**: Node.js / Express API Server (`api-server`)
+- **AI Models**: Google Gemini Vision API (`gemini-3.7-flash` / fallback models)
+- **API Specs**: API Client with Zod validation (`api-client-react`)
 
-1. Create a new **Web Service** on [Render](https://render.com) connected to your repository (or use the provided `render.yaml` Blueprint).
-2. Configure settings:
-   - **Environment**: `Node`
-   - **Build Command**: `npm install && npm run build`
-   - **Start Command**: `npm start`
-   - **Health Check Path**: `/api/healthz`
-3. Add Environment Variables:
-   - `GEMINI_API_KEY`: Your Google Gemini API Key.
-   - `GEMINI_MODEL`: (Optional) Default is `gemini-3.7-flash`.
-   - `NODE_ENV`: `production`
-
-The API server automatically serves the built frontend SPA at `/` and handles all `/api/*` endpoints.
-
-### Option 2: Frontend on Vercel + Backend on Render
-
-If you prefer to deploy the static frontend on Vercel and the Express API on Render:
-
-1. **Backend on Render**:
-   - Follow Option 1 above, but set the backend start command to run `npm run start --workspace=@workspace/api-server`.
-   - Copy your Render backend URL (e.g. `https://medical-assistant-api.onrender.com`).
-
-2. **Frontend on Vercel**:
-   - Import your repository into [Vercel](https://vercel.com).
-   - Use the root directory with the included `vercel.json`, or set Root Directory to `artifacts/medical-assistant`.
-   - Add Environment Variable:
-     - `VITE_API_URL`: Set to your Render backend URL (e.g. `https://medical-assistant-api.onrender.com`).
-   - Deploy.
+### **Deployment & Infrastructure**
+- **Hosting**: Vercel (Frontend), Render (`render.yaml` for Backend)
+- **Monorepo / Workspace**: Artifacts-based modular structure
 
 ---
 
-## Environment Variables
+## 📂 Project Structure
 
-| Variable | Required | Description |
-|---|---|---|
-| `GEMINI_API_KEY` | Yes (for AI features) | API key for Gemini Vision and Chat |
-| `GEMINI_MODEL` | No | Override default model (default: `gemini-3.7-flash`) |
-| `PORT` | No | Port for API server (default: `5000`) |
-| `VITE_API_URL` | No | Backend base URL for Vercel decoupled frontend |
-
----
-
-## Project Structure
-
-```
 Medical_Assistant/
+├── api/                  # API entry points (index.ts)
 ├── artifacts/
-│   ├── api-server/             # Express 5 backend with Gemini Vision & Chat
-│   │   ├── src/
-│   │   │   ├── routes/         # /api/healthz, /api/scan, /api/chat
-│   │   │   ├── app.ts          # Express setup + static SPA serving
-│   │   │   └── index.ts        # Server entrypoint
-│   └── medical-assistant/      # React + Vite frontend application
+│   ├── api-server/       # Express/Node backend service
+│   │   ├── src/          # API route handlers & services
+│   │   ├── build.mjs     # Build script
+│   │   └── package.json
+│   └── medical-assistant/# React + Vite Frontend application
+│       ├── public/       # Static assets (favicons, robots.txt)
 │       ├── src/
-│       │   ├── components/     # Shell, uploader, error boundary, essential UI
-│       │   ├── pages/          # Home, Chat, History, 404
-│       │   └── test/           # Vitest test suites
-├── lib/
-│   ├── api-client-react/       # Generated React Query hooks & custom-fetch
-│   ├── api-spec/               # OpenAPI spec source of truth
-│   └── api-zod/                # Zod schemas for runtime request/response validation
-├── render.yaml                 # Render Blueprint configuration
-├── vercel.json                 # Vercel SPA configuration
-└── package.json                # Root workspace configuration
-```
+│       │   ├── components/  # Reusable UI components
+│       │   ├── hooks/       # Custom React hooks
+│       │   ├── lib/         # API clients and utilities
+│       │   ├── pages/       # App routes/views
+│       │   └── App.tsx      # Main application component
+│       ├── vercel.json     # Vercel deployment configuration
+│       └── vite.config.ts  # Vite build configuration
+├── render.yaml           # Render deployment configuration
+├── tsconfig.base.json    # Base TypeScript config
+└── package.json          # Root dependencies & scripts
