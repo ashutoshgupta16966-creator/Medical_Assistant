@@ -38,6 +38,7 @@
 
 ## 📂 Project Structure
 
+```text
 Medical_Assistant/
 ├── api/                  # API entry points (index.ts)
 ├── artifacts/
