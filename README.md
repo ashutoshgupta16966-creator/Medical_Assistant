@@ -30,10 +30,6 @@
 - **AI Models**: Google Gemini Vision API (`gemini-3.7-flash` / fallback models)
 - **API Specs**: API Client with Zod validation (`api-client-react`)
 
-### **Deployment & Infrastructure**
-- **Hosting**: Vercel (Frontend), Render (`render.yaml` for Backend)
-- **Monorepo / Workspace**: Artifacts-based modular structure
-
 ---
 
 ## 📂 Project Structure
