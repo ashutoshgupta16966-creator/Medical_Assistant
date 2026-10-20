@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { AnalyzeScanBody, AnalyzeScanResponse } from "@workspace/api-zod";
 import { GoogleGenAI } from "@google/genai";
+import sharp from "sharp";
 
 const router: IRouter = Router();
 
@@ -16,7 +17,8 @@ const FALLBACK_MODELS: readonly string[] = [
   "gemini-3.6-flash-lite",
 ];
 
-const MODEL_TIMEOUT_MS = 18_000;
+// Generous request timeout per Gemini model attempt (at least 45 seconds) to prevent premature aborts
+const MODEL_TIMEOUT_MS = 45_000;
 
 const analysisPrompt = `You are a careful medical information assistant analyzing one uploaded image from India. It may show a medicine strip, medicine box, prescription, or lab report.
 
@@ -273,13 +275,136 @@ function normalizeScanResponse(candidate: Record<string, unknown>) {
   });
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+// Threshold above which an uploaded image base64 payload is considered excessively large
+// 800 KB raw byte size corresponds to ~1.07 MB base64 string
+const LARGE_IMAGE_THRESHOLD_BYTES = 800 * 1024;
+const MAX_IMAGE_DIMENSION = 1536;
+const JPEG_COMPRESSION_QUALITY = 82;
+
+interface ProcessedImagePayload {
+  data: string;
+  mimeType: string;
+  originalBytes: number;
+  finalBytes: number;
+  compressed: boolean;
+}
+
+/**
+ * Downscales and compresses base64 image data if the payload is excessively large
+ * (either in byte size or resolution dimensions), reducing network payload size
+ * for faster transmission to the Gemini API.
+ */
+async function optimizeImageIfLarge(
+  base64Data: string,
+  mimeType: string,
+): Promise<ProcessedImagePayload> {
+  const originalBytes = Math.ceil((base64Data.length * 3) / 4);
+
+  try {
+    const inputBuffer = Buffer.from(base64Data, "base64");
+    const image = sharp(inputBuffer);
+    const metadata = await image.metadata();
+
+    const isExcessiveBytes = originalBytes > LARGE_IMAGE_THRESHOLD_BYTES;
+    const isExcessiveResolution =
+      (metadata.width !== undefined && metadata.width > MAX_IMAGE_DIMENSION) ||
+      (metadata.height !== undefined && metadata.height > MAX_IMAGE_DIMENSION);
+
+    if (!isExcessiveBytes && !isExcessiveResolution) {
+      return {
+        data: base64Data,
+        mimeType,
+        originalBytes,
+        finalBytes: originalBytes,
+        compressed: false,
+      };
+    }
+
+    console.log(
+      `[analyze] Image is excessively large (${(originalBytes / 1024).toFixed(1)} KB, ` +
+        `dimensions: ${metadata.width}x${metadata.height}). Downscaling and compressing...`,
+    );
+
+    const pipeline = sharp(inputBuffer)
+      .rotate() // Auto-orient according to EXIF
+      .resize({
+        width: MAX_IMAGE_DIMENSION,
+        height: MAX_IMAGE_DIMENSION,
+        fit: "inside",
+        withoutEnlargement: true,
+      });
+
+    let compressedBuffer: Buffer;
+    let targetMime = "image/jpeg";
+
+    if (mimeType === "image/webp") {
+      compressedBuffer = await pipeline
+        .webp({ quality: JPEG_COMPRESSION_QUALITY })
+        .toBuffer();
+      targetMime = "image/webp";
+    } else {
+      // Default to JPEG for optimal text clarity and payload compression
+      compressedBuffer = await pipeline
+        .jpeg({ quality: JPEG_COMPRESSION_QUALITY, mozjpeg: true })
+        .toBuffer();
+      targetMime = "image/jpeg";
+    }
+
+    // Only adopt compressed buffer if it produced a smaller payload
+    if (compressedBuffer.length < originalBytes) {
+      const finalBytes = compressedBuffer.length;
+      const reduction = (((originalBytes - finalBytes) / originalBytes) * 100).toFixed(1);
+      console.log(
+        `[analyze] Successfully compressed image: ${(originalBytes / 1024).toFixed(1)} KB -> ` +
+          `${(finalBytes / 1024).toFixed(1)} KB (${reduction}% reduction).`,
+      );
+      return {
+        data: compressedBuffer.toString("base64"),
+        mimeType: targetMime,
+        originalBytes,
+        finalBytes,
+        compressed: true,
+      };
+    }
+
+    return {
+      data: base64Data,
+      mimeType,
+      originalBytes,
+      finalBytes: originalBytes,
+      compressed: false,
+    };
+  } catch (err: unknown) {
+    console.warn(
+      "[analyze] Failed to downscale/compress image with sharp, proceeding with original payload:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return {
+      data: base64Data,
+      mimeType,
+      originalBytes,
+      finalBytes: originalBytes,
+      compressed: false,
+    };
+  }
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  controller?: AbortController,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("ANALYSIS_TIMEOUT")), timeoutMs);
+        timer = setTimeout(() => {
+          if (controller && !controller.signal.aborted) {
+            controller.abort(new Error("ANALYSIS_TIMEOUT"));
+          }
+          reject(new Error("ANALYSIS_TIMEOUT"));
+        }, timeoutMs);
       }),
     ]);
   } finally {
@@ -353,6 +478,7 @@ async function requestModel(
   }
 
   const ai = new GoogleGenAI({ apiKey });
+  const abortController = new AbortController();
 
   let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
   try {
@@ -371,11 +497,22 @@ async function requestModel(
         config: {
           responseMimeType: "application/json",
           temperature: 0.1,
+          abortSignal: abortController.signal,
+          httpOptions: {
+            timeout: MODEL_TIMEOUT_MS,
+          },
         },
       }),
       MODEL_TIMEOUT_MS,
+      abortController,
     );
   } catch (sdkError: unknown) {
+    if (abortController.signal.aborted) {
+      console.warn(
+        `[analyze] Request for model=${model} aborted after timeout (${MODEL_TIMEOUT_MS}ms)`,
+      );
+      throw new Error("ANALYSIS_TIMEOUT");
+    }
     console.error(`[analyze] Gemini SDK call failed for model=${model}:`);
     console.error(sdkError as unknown as Error);
     console.error(
@@ -440,6 +577,22 @@ router.post("/analyze", async (req, res) => {
     return;
   }
 
+  // Downscale and compress image payload if excessively large to accelerate transmission to Gemini
+  const optimized = await optimizeImageIfLarge(base64, mimeType);
+  const payloadBase64 = optimized.data;
+  const payloadMimeType = optimized.mimeType;
+
+  if (optimized.compressed) {
+    req.log.info(
+      {
+        originalBytes: optimized.originalBytes,
+        finalBytes: optimized.finalBytes,
+        mimeType: payloadMimeType,
+      },
+      "Image downscaled and compressed for Gemini transmission",
+    );
+  }
+
   if (!process.env.GEMINI_API_KEY) {
     console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
     req.log.error("Gemini API key is not configured");
@@ -462,7 +615,7 @@ router.post("/analyze", async (req, res) => {
     for (const model of FALLBACK_MODELS) {
       try {
         console.log(`[analyze] Attempting analysis with model: ${model}...`);
-        rawText = await requestModel(model, base64, mimeType);
+        rawText = await requestModel(model, payloadBase64, payloadMimeType);
         successfulModel = model;
         console.log(`[analyze] Successfully received response from model: ${model}`);
         break;
@@ -499,9 +652,15 @@ router.post("/analyze", async (req, res) => {
         "All Gemini fallback models failed for image analysis",
       );
 
-      const hasTimeout = cascadeErrors.some(
-        (e) => (e.error as unknown as Error)?.message === "ANALYSIS_TIMEOUT",
-      );
+      const hasTimeout = cascadeErrors.some((e) => {
+        const err = e.error as unknown as Error;
+        return (
+          err?.message === "ANALYSIS_TIMEOUT" ||
+          err?.name === "AbortError" ||
+          err?.message?.includes("aborted") ||
+          err?.message?.includes("timeout")
+        );
+      });
       if (hasTimeout) {
         res.status(408).json({
           error: "Image analysis timed out across all models. Please retry.",
@@ -514,6 +673,7 @@ router.post("/analyze", async (req, res) => {
       });
       return;
     }
+
 
     let candidateData: Record<string, unknown>;
     try {
