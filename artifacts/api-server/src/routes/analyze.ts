@@ -4,8 +4,18 @@ import { GoogleGenAI } from "@google/genai";
 
 const router: IRouter = Router();
 
-const PRIMARY_MODEL = process.env.GEMINI_MODEL ?? "gemini-3.7-flash";
-const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+// Prioritized model fallback array in exact sequence:
+// 1. Primary: "gemini-3.8-flash"
+// 2. Fallback 1: "gemini-3.7-flash"
+// 3. Fallback 2: "gemini-3.6-plus"
+// 4. Fallback 3: "gemini-3.6-flash-lite"
+const FALLBACK_MODELS: readonly string[] = [
+  "gemini-3.8-flash",
+  "gemini-3.7-flash",
+  "gemini-3.6-plus",
+  "gemini-3.6-flash-lite",
+];
+
 const MODEL_TIMEOUT_MS = 18_000;
 
 const analysisPrompt = `You are a careful medical information assistant analyzing one uploaded image from India. It may show a medicine strip, medicine box, prescription, or lab report.
@@ -37,12 +47,56 @@ Rules:
 - Do not diagnose or make emergency claims.
 - Keep the Hindi fields natural, concise, and aligned one-to-one with their English counterparts.`;
 
+/**
+ * Strips markdown code blocks (```json ... ``` or ``` ... ```) and extracts outermost JSON object.
+ */
 function cleanJsonText(value: string): string {
-  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fenced?.[1] ?? value;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  return start >= 0 && end > start ? candidate.slice(start, end + 1) : candidate;
+  if (!value) return "{}";
+  let text = value.trim();
+
+  // 1. Strip markdown code fence blocks
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced && fenced[1]) {
+    text = fenced[1].trim();
+  } else {
+    text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
+  }
+
+  // 2. Extract outermost JSON object from first '{' to last '}'
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    return text.slice(start, end + 1).trim();
+  }
+
+  return text;
+}
+
+/**
+ * Robust JSON parser that strips markdown fences, extracts braces, and handles minor LLM quirks.
+ */
+function parseJsonSafely(rawText: string): Record<string, unknown> {
+  const cleaned = cleanJsonText(rawText);
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as unknown as Record<string, unknown>;
+    }
+    return {};
+  } catch (err: unknown) {
+    // Secondary attempt: remove trailing commas before closing braces/brackets
+    try {
+      const sanitized = cleaned.replace(/,\s*([}\]])/g, "$1");
+      const parsed = JSON.parse(sanitized);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as unknown as Record<string, unknown>;
+      }
+    } catch {
+      // Re-throw original parse error so caller can log full raw text
+      throw err as unknown as Error;
+    }
+    return {};
+  }
 }
 
 function expiryFromDate(expiryDate: string | null): {
@@ -68,6 +122,157 @@ function expiryFromDate(expiryDate: string | null): {
   return { status: "safe", label: "Safe to Use" };
 }
 
+/**
+ * Normalizes candidate data to guarantee every schema field is present and valid,
+ * gracefully handling missing, null, or improperly typed fields returned by the AI.
+ */
+function normalizeScanResponse(candidate: Record<string, unknown>) {
+  // 1. category: 'medicine' | 'lab_report' | 'unknown'
+  let category: "medicine" | "lab_report" | "unknown" = "unknown";
+  if (candidate.category === "medicine" || candidate.category === "lab_report") {
+    category = candidate.category;
+  } else if (typeof candidate.category === "string") {
+    const catLower = candidate.category.toLowerCase();
+    if (catLower.includes("lab") || catLower.includes("report") || catLower.includes("test")) {
+      category = "lab_report";
+    } else if (
+      catLower.includes("med") ||
+      catLower.includes("drug") ||
+      catLower.includes("pill") ||
+      catLower.includes("tablet") ||
+      catLower.includes("capsule") ||
+      catLower.includes("syrup")
+    ) {
+      category = "medicine";
+    }
+  }
+
+  // 2. nameEnglish & nameHindi
+  const nameEnglish =
+    typeof candidate.nameEnglish === "string" && candidate.nameEnglish.trim()
+      ? candidate.nameEnglish.trim()
+      : "Not clearly visible";
+  const nameHindi =
+    typeof candidate.nameHindi === "string" ? candidate.nameHindi.trim() : "";
+
+  // 3. treatsEnglish & treatsHindi
+  const treatsEnglish =
+    typeof candidate.treatsEnglish === "string" && candidate.treatsEnglish.trim()
+      ? candidate.treatsEnglish.trim()
+      : "Not clearly visible";
+  const treatsHindi =
+    typeof candidate.treatsHindi === "string" ? candidate.treatsHindi.trim() : "";
+
+  // 4. usage & usageHindi
+  const usage =
+    typeof candidate.usage === "string" && candidate.usage.trim()
+      ? candidate.usage.trim()
+      : "Please confirm the intended use with a doctor or pharmacist.";
+  const usageHindi =
+    typeof candidate.usageHindi === "string" && candidate.usageHindi.trim()
+      ? candidate.usageHindi.trim()
+      : "उपयोग की पुष्टि डॉक्टर या फार्मासिस्ट से करें।";
+
+  // 5. dosage & dosageHindi
+  const dosage =
+    typeof candidate.dosage === "string" && candidate.dosage.trim()
+      ? candidate.dosage.trim()
+      : "Dosage is not clearly visible. Please confirm with a doctor or pharmacist.";
+  const dosageHindi =
+    typeof candidate.dosageHindi === "string" && candidate.dosageHindi.trim()
+      ? candidate.dosageHindi.trim()
+      : "खुराक स्पष्ट रूप से दिखाई नहीं दे रही है। डॉक्टर या फार्मासिस्ट से पुष्टि करें।";
+
+  // 6. expiryDate: string | null
+  let expiryDate: string | null = null;
+  if (typeof candidate.expiryDate === "string") {
+    const trimmed = candidate.expiryDate.trim();
+    if (
+      trimmed &&
+      trimmed.toLowerCase() !== "null" &&
+      trimmed.toLowerCase() !== "unknown" &&
+      trimmed.toLowerCase() !== "n/a"
+    ) {
+      expiryDate = trimmed;
+    }
+  }
+
+  // 7. expiryStatus, expiryLabel, expiryLabelHindi
+  const calculatedExpiry = expiryFromDate(expiryDate);
+  let expiryStatus: "danger" | "soon" | "safe" | "unknown" = calculatedExpiry.status;
+  if (expiryStatus === "unknown" && typeof candidate.expiryStatus === "string") {
+    const s = candidate.expiryStatus.toLowerCase().trim();
+    if (s === "danger" || s === "soon" || s === "safe" || s === "unknown") {
+      expiryStatus = s;
+    }
+  }
+
+  let expiryLabel = calculatedExpiry.label;
+  if (typeof candidate.expiryLabel === "string" && candidate.expiryLabel.trim()) {
+    expiryLabel = candidate.expiryLabel.trim();
+  }
+
+  let expiryLabelHindi = "समाप्ति की स्थिति उपलब्ध नहीं है";
+  if (typeof candidate.expiryLabelHindi === "string" && candidate.expiryLabelHindi.trim()) {
+    expiryLabelHindi = candidate.expiryLabelHindi.trim();
+  } else if (expiryStatus === "danger") {
+    expiryLabelHindi = "खतरा — तुरंत बदलें";
+  } else if (expiryStatus === "soon") {
+    expiryLabelHindi = "शीघ्र उपयोग करें";
+  } else if (expiryStatus === "safe") {
+    expiryLabelHindi = "उपयोग के लिए सुरक्षित";
+  }
+
+  // 8. confidence: number between 0 and 1
+  let confidence = 0.5;
+  if (typeof candidate.confidence === "number" && !Number.isNaN(candidate.confidence)) {
+    confidence = Math.min(1, Math.max(0, candidate.confidence));
+  } else if (typeof candidate.confidence === "string") {
+    const num = parseFloat(candidate.confidence);
+    if (!Number.isNaN(num)) {
+      confidence = Math.min(1, Math.max(0, num));
+    }
+  }
+
+  // 9. notes & notesHindi: string[]
+  const notes: string[] = Array.isArray(candidate.notes)
+    ? candidate.notes
+        .map((n) => (typeof n === "string" ? n.trim() : String(n ?? "").trim()))
+        .filter(Boolean)
+        .slice(0, 5)
+    : typeof candidate.notes === "string" && candidate.notes.trim()
+      ? [candidate.notes.trim()]
+      : [];
+
+  const notesHindi: string[] = Array.isArray(candidate.notesHindi)
+    ? candidate.notesHindi
+        .map((n) => (typeof n === "string" ? n.trim() : String(n ?? "").trim()))
+        .filter(Boolean)
+        .slice(0, 5)
+    : typeof candidate.notesHindi === "string" && candidate.notesHindi.trim()
+      ? [candidate.notesHindi.trim()]
+      : [];
+
+  return AnalyzeScanResponse.parse({
+    category,
+    nameEnglish,
+    nameHindi,
+    treatsEnglish,
+    treatsHindi,
+    usage,
+    usageHindi,
+    dosage,
+    dosageHindi,
+    expiryDate,
+    expiryStatus,
+    expiryLabel,
+    expiryLabelHindi,
+    confidence,
+    notes,
+    notesHindi,
+  });
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -79,6 +284,61 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Safely extracts error details including status code, response body, cause, etc.,
+ * avoiding TS2352 errors by casting through `unknown`.
+ */
+function formatErrorDetails(err: unknown): Record<string, unknown> {
+  if (err instanceof Error) {
+    const errorRec = err as unknown as Record<string, unknown>;
+    const details: Record<string, unknown> = {
+      message: err.message,
+      name: err.name,
+      stack: err.stack,
+    };
+    if ("cause" in err) {
+      details.cause = (err as unknown as { cause: unknown }).cause;
+    }
+    for (const key of Object.keys(errorRec)) {
+      try {
+        const val = errorRec[key];
+        if (typeof val !== "function") {
+          details[key] = val;
+        }
+      } catch {
+        // Ignore unreadable properties
+      }
+    }
+    return details;
+  }
+  if (typeof err === "object" && err !== null) {
+    return err as unknown as Record<string, unknown>;
+  }
+  return { error: String(err) };
+}
+
+/**
+ * Safe stringifier that tolerates circular structures.
+ */
+function safeStringify(value: unknown): string {
+  try {
+    const seen = new WeakSet();
+    return JSON.stringify(
+      value,
+      (_key, val) => {
+        if (typeof val === "object" && val !== null) {
+          if (seen.has(val)) return "[Circular]";
+          seen.add(val);
+        }
+        return val;
+      },
+      2,
+    );
+  } catch {
+    return String(value);
   }
 }
 
@@ -115,53 +375,40 @@ async function requestModel(
       }),
       MODEL_TIMEOUT_MS,
     );
-  } catch (sdkError) {
-    // Log the full SDK error so it appears in Render logs even if pino serializes it partially
+  } catch (sdkError: unknown) {
+    console.error(`[analyze] Gemini SDK call failed for model=${model}:`);
+    console.error(sdkError as unknown as Error);
     console.error(
-      `[analyze] Gemini SDK call failed for model=${model}:`,
-      sdkError instanceof Error
-        ? {
-            message: sdkError.message,
-            name: sdkError.name,
-            cause: (sdkError as NodeJS.ErrnoException).cause,
-            stack: sdkError.stack,
-            // @google/genai sometimes attaches status/body on the error object
-            ...(sdkError as unknown as Record<string, unknown>),
-          }
-        : sdkError,
+      `[analyze] Gemini SDK full error details for model=${model}:`,
+      safeStringify(formatErrorDetails(sdkError)),
     );
     throw sdkError;
   }
 
-  // response.text is a getter in @google/genai v2+ that may return undefined
-  // when the model response was blocked or the candidate list was empty.
+  const responseRec = response as unknown as Record<string, unknown>;
   const rawText: string | undefined =
-    typeof response.text === "function"
-      ? (response.text as () => string | undefined)()
-      : response.text;
+    typeof responseRec.text === "function"
+      ? (responseRec.text as unknown as () => string | undefined)()
+      : (responseRec.text as unknown as string | undefined);
 
-  // Log the raw text at debug level so it is visible when LOG_LEVEL=debug
   console.log(
     `[analyze] Raw Gemini response from model=${model} (${rawText?.length ?? 0} chars):`,
-    rawText ? rawText.slice(0, 500) : "<empty>",
+    rawText ? (rawText.length > 500 ? `${rawText.slice(0, 500)}...` : rawText) : "<empty>",
   );
 
-  if (!rawText) {
-    // Log the full response object to diagnose blocked/empty responses
+  if (!rawText || !rawText.trim()) {
     console.error(
-      `[analyze] EMPTY_MODEL_RESPONSE from model=${model}. Full response object:`,
-      JSON.stringify(
-        {
-          candidates: (response as unknown as Record<string, unknown>).candidates,
-          promptFeedback: (response as unknown as Record<string, unknown>).promptFeedback,
-          usageMetadata: (response as unknown as Record<string, unknown>).usageMetadata,
-        },
-        null,
-        2,
-      ),
+      `[analyze] EMPTY_MODEL_RESPONSE from model=${model}. Full raw response object:`,
+      safeStringify({
+        candidates: responseRec.candidates,
+        promptFeedback: responseRec.promptFeedback,
+        usageMetadata: responseRec.usageMetadata,
+        rawResponse: responseRec,
+      }),
     );
     throw new Error(`EMPTY_MODEL_RESPONSE (${model})`);
   }
+
   return rawText;
 }
 
@@ -178,7 +425,9 @@ router.post("/analyze", async (req, res) => {
   // Log image details before every request so size issues are immediately diagnosable
   const estimatedBytes = Math.ceil((base64.length * 3) / 4);
   const estimatedKB = (estimatedBytes / 1024).toFixed(1);
-  console.log(`[analyze] Incoming image: mimeType=${mimeType}, estimatedSize=${estimatedKB} KB (base64 length=${base64.length})`);
+  console.log(
+    `[analyze] Incoming image: mimeType=${mimeType}, estimatedSize=${estimatedKB} KB (base64 length=${base64.length})`,
+  );
   req.log.info({ mimeType, estimatedBytes, base64Length: base64.length }, "Incoming image details");
 
   // Enforce ~4 MB image cap (Vercel serverless payload ceiling is 4.5 MB total)
@@ -191,84 +440,124 @@ router.post("/analyze", async (req, res) => {
     return;
   }
 
+  if (!process.env.GEMINI_API_KEY) {
+    console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
+    req.log.error("Gemini API key is not configured");
+    res.status(502).json({
+      error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry.",
+    });
+    return;
+  }
+
   try {
-    let rawText: string;
-    try {
-      rawText = await requestModel(PRIMARY_MODEL, base64, mimeType);
-    } catch (primaryError) {
-      console.error(
-        `[analyze] Primary model (${PRIMARY_MODEL}) failed — trying fallback (${FALLBACK_MODEL}):`,
-        primaryError instanceof Error ? primaryError.message : primaryError,
-      );
-      req.log.warn({ err: primaryError, model: PRIMARY_MODEL }, "Primary Gemini model failed; trying fallback");
-      rawText = await requestModel(FALLBACK_MODEL, base64, mimeType);
+    let rawText: string | null = null;
+    let successfulModel: string | null = null;
+    const cascadeErrors: Array<{
+      model: string;
+      error: unknown;
+      errorDetails: Record<string, unknown>;
+    }> = [];
+
+    // Cascade through prioritized model fallback array
+    for (const model of FALLBACK_MODELS) {
+      try {
+        console.log(`[analyze] Attempting analysis with model: ${model}...`);
+        rawText = await requestModel(model, base64, mimeType);
+        successfulModel = model;
+        console.log(`[analyze] Successfully received response from model: ${model}`);
+        break;
+      } catch (err: unknown) {
+        console.error(`[analyze] Model "${model}" failed or timed out:`);
+        console.error(err as unknown as Error);
+        const details = formatErrorDetails(err);
+        console.error(
+          `[analyze] Full error details for model "${model}":`,
+          safeStringify(details),
+        );
+        cascadeErrors.push({ model, error: err, errorDetails: details });
+        req.log.warn(
+          { model, err: details },
+          `Gemini model ${model} failed; trying next fallback`,
+        );
+      }
     }
 
-    let data: unknown;
-    try {
-      const cleaned = cleanJsonText(rawText);
-      data = JSON.parse(cleaned);
-    } catch (parseError) {
-      // Log the FULL raw text so we can see exactly what Gemini returned
+    if (!rawText) {
       console.error(
-        "[analyze] JSON.parse failed. Full raw Gemini text:",
+        `[analyze] All ${FALLBACK_MODELS.length} Gemini models in fallback cascade failed.`,
+      );
+      console.error(
+        "[analyze] Full raw cascade error breakdown:",
+        safeStringify(cascadeErrors),
+      );
+      for (const item of cascadeErrors) {
+        console.error(`[analyze] Failure on ${item.model}:`, item.error as unknown as Error);
+        console.error(`[analyze] Raw details for ${item.model}:`, safeStringify(item.errorDetails));
+      }
+      req.log.error(
+        { cascadeErrors },
+        "All Gemini fallback models failed for image analysis",
+      );
+
+      const hasTimeout = cascadeErrors.some(
+        (e) => (e.error as unknown as Error)?.message === "ANALYSIS_TIMEOUT",
+      );
+      if (hasTimeout) {
+        res.status(408).json({
+          error: "Image analysis timed out across all models. Please retry.",
+        });
+        return;
+      }
+
+      res.status(502).json({
+        error: "We couldn't analyze that image right now. Please try again.",
+      });
+      return;
+    }
+
+    let candidateData: Record<string, unknown>;
+    try {
+      candidateData = parseJsonSafely(rawText);
+    } catch (parseError: unknown) {
+      console.error(
+        `[analyze] JSON.parse failed for response from model=${successfulModel}. Full raw Gemini text:`,
         rawText,
       );
-      console.error("[analyze] JSON parse error:", parseError);
-      req.log.error({ err: parseError, rawText }, "Gemini returned invalid JSON");
-      res.status(502).json({ error: "We couldn't read that image clearly. Please try a sharper photo." });
+      console.error("[analyze] JSON parse error:", parseError as unknown as Error);
+      console.error(parseError as unknown as Error);
+      req.log.error(
+        { err: formatErrorDetails(parseError), rawText, model: successfulModel },
+        "Gemini returned invalid JSON",
+      );
+      res.status(502).json({
+        error: "We couldn't read that image clearly. Please try a sharper photo.",
+      });
       return;
     }
 
-    const candidate = data as Record<string, unknown>;
-    const expiryDate =
-      typeof candidate.expiryDate === "string" && candidate.expiryDate
-        ? candidate.expiryDate
-        : null;
-    const expiry = expiryFromDate(expiryDate);
-    const normalized = AnalyzeScanResponse.parse({
-      category: candidate.category ?? "unknown",
-      nameEnglish: candidate.nameEnglish || "Not clearly visible",
-      nameHindi: candidate.nameHindi || "",
-      treatsEnglish: candidate.treatsEnglish || "Not clearly visible",
-      treatsHindi: candidate.treatsHindi || "",
-      usage: candidate.usage || "Please confirm the intended use with a doctor or pharmacist.",
-      usageHindi: candidate.usageHindi || "उपयोग की पुष्टि डॉक्टर या फार्मासिस्ट से करें।",
-      dosage: candidate.dosage || "Dosage is not clearly visible. Please confirm with a doctor or pharmacist.",
-      dosageHindi: candidate.dosageHindi || "खुराक स्पष्ट रूप से दिखाई नहीं दे रही है। डॉक्टर या फार्मासिस्ट से पुष्टि करें।",
-      expiryDate,
-      expiryStatus: expiry.status,
-      expiryLabel: expiry.label,
-      expiryLabelHindi: candidate.expiryLabelHindi || "समाप्ति की स्थिति उपलब्ध नहीं है",
-      confidence: typeof candidate.confidence === "number" ? Math.min(1, Math.max(0, candidate.confidence)) : 0.4,
-      notes: Array.isArray(candidate.notes)
-        ? candidate.notes.filter((note): note is string => typeof note === "string").slice(0, 5)
-        : [],
-      notesHindi: Array.isArray(candidate.notesHindi)
-        ? candidate.notesHindi.filter((note): note is string => typeof note === "string").slice(0, 5)
-        : [],
-    });
-
+    const normalized = normalizeScanResponse(candidateData);
     res.json(normalized);
-  } catch (error) {
-    if (error instanceof Error && error.message === "GEMINI_API_KEY_MISSING") {
+  } catch (error: unknown) {
+    const errObj = error as unknown as Error;
+    if (errObj?.message === "GEMINI_API_KEY_MISSING") {
       console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
-      req.log.error({ err: error }, "Gemini API key is not configured");
-      res.status(502).json({ error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry." });
+      req.log.error({ err: formatErrorDetails(error) }, "Gemini API key is not configured");
+      res.status(502).json({
+        error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry.",
+      });
       return;
     }
 
-    if (error instanceof Error && error.message === "ANALYSIS_TIMEOUT") {
-      console.error(`[analyze] Gemini analysis timed out after ${MODEL_TIMEOUT_MS}ms.`);
-      req.log.error({ err: error }, "Gemini analysis timed out");
-      res.status(408).json({ error: "This image is taking a little longer to analyze. Please retry." });
-      return;
-    }
-
-    // Catch-all: log the full error object so root cause is always visible in Render logs
     console.error("[analyze] Unhandled error during medical image analysis:", error);
-    req.log.error({ err: error }, "Medical image analysis failed");
-    res.status(502).json({ error: "We couldn't analyze that image right now. Please try again." });
+    console.error(error as unknown as Error);
+    console.error(
+      "[analyze] Full unhandled error details:",
+      safeStringify(formatErrorDetails(error)),
+    );
+    req.log.error({ err: formatErrorDetails(error) }, "Medical image analysis failed");
+    res.status(502).json({
+      error: "We couldn't analyze that image right now. Please try again.",
+    });
   }
 });
 
