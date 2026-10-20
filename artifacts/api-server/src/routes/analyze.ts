@@ -126,7 +126,7 @@ async function requestModel(
             cause: (sdkError as NodeJS.ErrnoException).cause,
             stack: sdkError.stack,
             // @google/genai sometimes attaches status/body on the error object
-            ...(sdkError as Record<string, unknown>),
+            ...(sdkError as unknown as Record<string, unknown>),
           }
         : sdkError,
     );
@@ -152,9 +152,9 @@ async function requestModel(
       `[analyze] EMPTY_MODEL_RESPONSE from model=${model}. Full response object:`,
       JSON.stringify(
         {
-          candidates: (response as Record<string, unknown>).candidates,
-          promptFeedback: (response as Record<string, unknown>).promptFeedback,
-          usageMetadata: (response as Record<string, unknown>).usageMetadata,
+          candidates: (response as unknown as Record<string, unknown>).candidates,
+          promptFeedback: (response as unknown as Record<string, unknown>).promptFeedback,
+          usageMetadata: (response as unknown as Record<string, unknown>).usageMetadata,
         },
         null,
         2,
