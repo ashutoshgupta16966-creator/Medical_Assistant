@@ -23,19 +23,103 @@ function supportedMime(type: string): SelectedImage['mimeType'] {
   return 'image/jpeg';
 }
 
+/**
+ * Compress and resize an image file before sending to the API.
+ *
+ * Strategy:
+ *  - HEIC/HEIF: pass through as-is (Gemini handles them; canvas can't re-encode them).
+ *  - All others: draw onto a canvas capped at MAX_DIMENSION px on the long edge,
+ *    then export as JPEG at QUALITY. This keeps almost every phone photo under 600 KB
+ *    and well within the server's 4 MB hard cap.
+ *
+ * Returns a { dataUrl, mimeType } tuple.
+ */
+const MAX_DIMENSION = 1600; // px — enough detail for text on a medicine strip
+const QUALITY = 0.82;       // JPEG quality — good text clarity at small file size
+
+async function compressImage(
+  file: File,
+): Promise<{ dataUrl: string; mimeType: SelectedImage['mimeType'] }> {
+  const originalMime = supportedMime(file.type);
+
+  // HEIC/HEIF can't be decoded by the browser canvas; pass through unchanged.
+  if (originalMime === 'image/heic' || originalMime === 'image/heif') {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve({ dataUrl: reader.result as string, mimeType: originalMime });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const img = new Image();
+
+    img.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+
+      // Compute scaled dimensions, preserving aspect ratio
+      let { width, height } = img;
+      if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+        if (width >= height) {
+          height = Math.round((height * MAX_DIMENSION) / width);
+          width = MAX_DIMENSION;
+        } else {
+          width = Math.round((width * MAX_DIMENSION) / height);
+          height = MAX_DIMENSION;
+        }
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas 2D context unavailable'));
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Always export as JPEG for maximum compression; PNG would be much larger
+      const dataUrl = canvas.toDataURL('image/jpeg', QUALITY);
+      resolve({ dataUrl, mimeType: 'image/jpeg' });
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      // Fall back to raw read if the browser can't decode the image format
+      const reader = new FileReader();
+      reader.onload = () => resolve({ dataUrl: reader.result as string, mimeType: originalMime });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    };
+
+    img.src = objectUrl;
+  });
+}
+
 export function ScanUploader({ image, onSelect, onClear, onAnalyze, isAnalyzing }: ScanUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const cameraRef = useRef<HTMLInputElement>(null);
 
   const readFile = (file?: File) => {
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        onSelect({ dataUrl: reader.result, mimeType: supportedMime(file.type), fileName: file.name || 'scan-image' });
-      }
-    };
-    reader.readAsDataURL(file);
+    compressImage(file)
+      .then(({ dataUrl, mimeType }) => {
+        onSelect({ dataUrl, mimeType, fileName: file.name || 'scan-image' });
+      })
+      .catch(() => {
+        // Compression failed (e.g. very unusual format) — fall back to raw read
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (typeof reader.result === 'string') {
+            onSelect({ dataUrl: reader.result, mimeType: supportedMime(file.type), fileName: file.name || 'scan-image' });
+          }
+        };
+        reader.readAsDataURL(file);
+      });
   };
 
   return (

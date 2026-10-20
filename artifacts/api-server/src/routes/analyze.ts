@@ -93,31 +93,76 @@ async function requestModel(
   }
 
   const ai = new GoogleGenAI({ apiKey });
-  const response = await withTimeout(
-    ai.models.generateContent({
-      model,
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { inlineData: { mimeType, data: imageData } },
-            { text: analysisPrompt },
-          ],
+
+  let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
+  try {
+    response = await withTimeout(
+      ai.models.generateContent({
+        model,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType, data: imageData } },
+              { text: analysisPrompt },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          temperature: 0.1,
         },
-      ],
-      config: {
-        responseMimeType: "application/json",
-        temperature: 0.1,
-      },
-    }),
-    MODEL_TIMEOUT_MS,
+      }),
+      MODEL_TIMEOUT_MS,
+    );
+  } catch (sdkError) {
+    // Log the full SDK error so it appears in Render logs even if pino serializes it partially
+    console.error(
+      `[analyze] Gemini SDK call failed for model=${model}:`,
+      sdkError instanceof Error
+        ? {
+            message: sdkError.message,
+            name: sdkError.name,
+            cause: (sdkError as NodeJS.ErrnoException).cause,
+            stack: sdkError.stack,
+            // @google/genai sometimes attaches status/body on the error object
+            ...(sdkError as Record<string, unknown>),
+          }
+        : sdkError,
+    );
+    throw sdkError;
+  }
+
+  // response.text is a getter in @google/genai v2+ that may return undefined
+  // when the model response was blocked or the candidate list was empty.
+  const rawText: string | undefined =
+    typeof response.text === "function"
+      ? (response.text as () => string | undefined)()
+      : response.text;
+
+  // Log the raw text at debug level so it is visible when LOG_LEVEL=debug
+  console.log(
+    `[analyze] Raw Gemini response from model=${model} (${rawText?.length ?? 0} chars):`,
+    rawText ? rawText.slice(0, 500) : "<empty>",
   );
 
-  const text = response.text;
-  if (!text) {
+  if (!rawText) {
+    // Log the full response object to diagnose blocked/empty responses
+    console.error(
+      `[analyze] EMPTY_MODEL_RESPONSE from model=${model}. Full response object:`,
+      JSON.stringify(
+        {
+          candidates: (response as Record<string, unknown>).candidates,
+          promptFeedback: (response as Record<string, unknown>).promptFeedback,
+          usageMetadata: (response as Record<string, unknown>).usageMetadata,
+        },
+        null,
+        2,
+      ),
+    );
     throw new Error(`EMPTY_MODEL_RESPONSE (${model})`);
   }
-  return text;
+  return rawText;
 }
 
 router.post("/analyze", async (req, res) => {
@@ -130,30 +175,46 @@ router.post("/analyze", async (req, res) => {
   const { imageData, mimeType } = parsed.data;
   const base64 = imageData.replace(/^data:[^;]+;base64,/, "");
 
-  // Enforce ~4 MB image cap (Vercel serverless payload ceiling is 4.5 MB total)
+  // Log image details before every request so size issues are immediately diagnosable
   const estimatedBytes = Math.ceil((base64.length * 3) / 4);
+  const estimatedKB = (estimatedBytes / 1024).toFixed(1);
+  console.log(`[analyze] Incoming image: mimeType=${mimeType}, estimatedSize=${estimatedKB} KB (base64 length=${base64.length})`);
+  req.log.info({ mimeType, estimatedBytes, base64Length: base64.length }, "Incoming image details");
+
+  // Enforce ~4 MB image cap (Vercel serverless payload ceiling is 4.5 MB total)
   const MAX_BYTES = 4 * 1024 * 1024; // 4 MB
   if (estimatedBytes > MAX_BYTES) {
+    console.error(`[analyze] Image too large: ${estimatedKB} KB exceeds 4 MB limit. Returning 413.`);
     res.status(413).json({
-      error: "That image is too large to analyze (limit: 4 MB). Please resize or compress it before uploading.",
+      error: `That image is too large to analyze (${estimatedKB} KB; limit: 4 MB). Please resize or compress it before uploading.`,
     });
     return;
   }
-
 
   try {
     let rawText: string;
     try {
       rawText = await requestModel(PRIMARY_MODEL, base64, mimeType);
     } catch (primaryError) {
+      console.error(
+        `[analyze] Primary model (${PRIMARY_MODEL}) failed — trying fallback (${FALLBACK_MODEL}):`,
+        primaryError instanceof Error ? primaryError.message : primaryError,
+      );
       req.log.warn({ err: primaryError, model: PRIMARY_MODEL }, "Primary Gemini model failed; trying fallback");
       rawText = await requestModel(FALLBACK_MODEL, base64, mimeType);
     }
 
     let data: unknown;
     try {
-      data = JSON.parse(cleanJsonText(rawText));
+      const cleaned = cleanJsonText(rawText);
+      data = JSON.parse(cleaned);
     } catch (parseError) {
+      // Log the FULL raw text so we can see exactly what Gemini returned
+      console.error(
+        "[analyze] JSON.parse failed. Full raw Gemini text:",
+        rawText,
+      );
+      console.error("[analyze] JSON parse error:", parseError);
       req.log.error({ err: parseError, rawText }, "Gemini returned invalid JSON");
       res.status(502).json({ error: "We couldn't read that image clearly. Please try a sharper photo." });
       return;
@@ -191,17 +252,21 @@ router.post("/analyze", async (req, res) => {
     res.json(normalized);
   } catch (error) {
     if (error instanceof Error && error.message === "GEMINI_API_KEY_MISSING") {
+      console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
       req.log.error({ err: error }, "Gemini API key is not configured");
       res.status(502).json({ error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry." });
       return;
     }
 
     if (error instanceof Error && error.message === "ANALYSIS_TIMEOUT") {
+      console.error(`[analyze] Gemini analysis timed out after ${MODEL_TIMEOUT_MS}ms.`);
       req.log.error({ err: error }, "Gemini analysis timed out");
       res.status(408).json({ error: "This image is taking a little longer to analyze. Please retry." });
       return;
     }
 
+    // Catch-all: log the full error object so root cause is always visible in Render logs
+    console.error("[analyze] Unhandled error during medical image analysis:", error);
     req.log.error({ err: error }, "Medical image analysis failed");
     res.status(502).json({ error: "We couldn't analyze that image right now. Please try again." });
   }
