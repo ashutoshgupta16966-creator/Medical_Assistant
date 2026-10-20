@@ -12,7 +12,7 @@
   - 🟡 **Use Soon**: Expiring within 8–15 days
   - 🟢 **Safe**: Valid for >15 days
 - 🌐 **Bilingual Results (English & Hindi)**: Seamless toggle for all analysis results, dosage instructions, usage notes, and health advice.
-- 💬 **Health Assistant Chat**: Interactive AI chat for general health guidance, symptom queries, and home-care suggestions with safety disclaimers.
+- 💬 **AI Health Assistant**: Interactive AI chat for general health guidance, symptom queries, and home-care suggestions with safety disclaimers.
 - 🔔 **Medication Reminders**: Automated frequency extraction (once/twice/thrice daily) with upcoming dosage tracking.
 - 🔒 **Privacy by Design**: All scanned images and medical records remain strictly in browser session memory—no medical images are stored on external databases.
 
