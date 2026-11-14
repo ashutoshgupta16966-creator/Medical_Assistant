@@ -2,6 +2,21 @@ export type CustomFetchOptions = RequestInit & {
   responseType?: "json" | "text" | "blob" | "auto";
 };
 
+// ---------------------------------------------------------------------------
+// Frontend request timeout
+// Must be longer than the backend worst case so the UI never cuts the
+// connection while the backend is still trying fallback models.
+//
+// Backend worst case  =  3 models × 20 s per model  =  60 s
+// Cold-start penalty  =  up to 50 s (Render free tier sleep)
+// This timeout        =  90 s  — safely above both.
+// ---------------------------------------------------------------------------
+const FETCH_TIMEOUT_MS = 90_000;
+
+// How long to wait before retrying once on a cold-start failure (502 / 503 /
+// network error). This covers Render's free-tier wakeup delay (~50 s).
+const COLD_START_RETRY_DELAY_MS = 4_000;
+
 export type ErrorType<T = unknown> = ApiError<T>;
 
 export type BodyType<T> = T;
@@ -322,12 +337,22 @@ async function parseSuccessBody(
   }
 }
 
+/** Returns true for errors that indicate a cold-start or transient gateway issue. */
+function isColdStartError(err: unknown, status?: number): boolean {
+  if (status === 502 || status === 503) return true;
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    return msg.includes("failed to fetch") || msg.includes("network") || msg.includes("networkerror");
+  }
+  return false;
+}
+
 export async function customFetch<T = unknown>(
   input: RequestInfo | URL,
   options: CustomFetchOptions = {},
 ): Promise<T> {
   input = applyBaseUrl(input);
-  const { responseType = "auto", headers: headersInit, ...init } = options;
+  const { responseType = "auto", headers: headersInit, signal: callerSignal, ...init } = options;
 
   const method = resolveMethod(input, init.method);
 
@@ -360,12 +385,61 @@ export async function customFetch<T = unknown>(
 
   const requestInfo = { method, url: resolveUrl(input) };
 
-  const response = await fetch(input, { ...init, method, headers });
+  /**
+   * Perform one fetch attempt with a combined timeout signal.
+   * We merge the caller's signal (if any) with the built-in FETCH_TIMEOUT_MS
+   * signal so whichever fires first wins.
+   */
+  async function doFetch(): Promise<T> {
+    // Build a timeout signal for this attempt
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(
+      () => timeoutController.abort(new Error("FETCH_TIMEOUT")),
+      FETCH_TIMEOUT_MS,
+    );
 
-  if (!response.ok) {
-    const errorData = await parseErrorBody(response, method);
-    throw new ApiError(response, errorData, requestInfo);
+    // Combine with any caller-supplied signal
+    let combinedSignal: AbortSignal = timeoutController.signal;
+    if (callerSignal) {
+      const combined = new AbortController();
+      const abort = () => combined.abort();
+      callerSignal.addEventListener("abort", abort, { once: true });
+      timeoutController.signal.addEventListener("abort", abort, { once: true });
+      combinedSignal = combined.signal;
+    }
+
+    try {
+      const response = await fetch(input, {
+        ...init,
+        method,
+        headers,
+        signal: combinedSignal,
+      });
+
+      if (!response.ok) {
+        const errorData = await parseErrorBody(response, method);
+        throw new ApiError(response, errorData, requestInfo);
+      }
+
+      return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
-  return (await parseSuccessBody(response, responseType, requestInfo)) as T;
+  // First attempt
+  try {
+    return await doFetch();
+  } catch (firstErr: unknown) {
+    // On cold-start / network / 502-503 errors: wait briefly, then retry once.
+    // This silently handles Render free-tier wakeup without showing any error.
+    const status =
+      firstErr instanceof ApiError ? firstErr.status : undefined;
+    if (isColdStartError(firstErr, status)) {
+      await new Promise((r) => setTimeout(r, COLD_START_RETRY_DELAY_MS));
+      // Second attempt — let it throw naturally if it also fails
+      return doFetch();
+    }
+    throw firstErr;
+  }
 }

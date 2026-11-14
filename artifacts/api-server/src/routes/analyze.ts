@@ -5,20 +5,27 @@ import sharp from "sharp";
 
 const router: IRouter = Router();
 
-// Prioritized model fallback array in exact sequence:
-// 1. Primary: "gemini-3.8-flash"
-// 2. Fallback 1: "gemini-3.7-flash"
-// 3. Fallback 2: "gemini-3.6-plus"
-// 4. Fallback 3: "gemini-3.6-flash-lite"
-const FALLBACK_MODELS: readonly string[] = [
-  "gemini-3.8-flash",
-  "gemini-3.7-flash",
-  "gemini-3.6-plus",
-  "gemini-3.6-flash-lite",
-];
+// ---------------------------------------------------------------------------
+// Model fallback list — in exact priority order requested:
+// 1. gemini-3.8-flash, 2. gemini-3.7-flash, 3. gemini-3.6-flash
+// Can be overridden by optional env variable GEMINI_MODELS (comma separated)
+// ---------------------------------------------------------------------------
+const DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"];
 
-// Generous request timeout per Gemini model attempt (at least 45 seconds) to prevent premature aborts
-const MODEL_TIMEOUT_MS = 45_000;
+function resolveModels(): readonly string[] {
+  const envOverride = process.env.GEMINI_MODELS;
+  if (envOverride && envOverride.trim()) {
+    return envOverride
+      .split(",")
+      .map((m) => m.trim())
+      .filter(Boolean);
+  }
+  return DEFAULT_MODELS;
+}
+
+// Per-attempt timeout. Frontend signal is set to 90 s in custom-fetch.ts,
+// which is comfortably above the worst-case backend time.
+const MODEL_TIMEOUT_MS = 20_000; // 20 s per model
 
 const analysisPrompt = `You are a careful medical information assistant analyzing one uploaded image from India. It may show a medicine strip, medicine box, prescription, or lab report.
 
@@ -467,7 +474,48 @@ function safeStringify(value: unknown): string {
   }
 }
 
-async function requestModel(
+/** Returns true if the error looks like a transient overload (429 / 503). */
+function isRetryable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+  const rec = err as Record<string, unknown>;
+  const status = typeof rec?.status === "number" ? rec.status : 0;
+  return (
+    status === 429 ||
+    status === 503 ||
+    msg.includes("429") ||
+    msg.includes("503") ||
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("overloaded")
+  );
+}
+
+/** Extracts any model name suggested in a 404 / 'no longer available' error message. */
+function extractSuggestedModel(err: unknown): string | null {
+  if (!err) return null;
+  const errStr = err instanceof Error ? `${err.message} ${(err as Error & { cause?: unknown }).cause ?? ""}` : String(err);
+  const rec = typeof err === "object" && err !== null ? (err as Record<string, unknown>) : {};
+  const status = typeof rec.status === "number" ? rec.status : undefined;
+  const is404 =
+    status === 404 ||
+    /404|not[ _]?found|no longer available|deprecated/i.test(errStr);
+  if (!is404) return null;
+
+  const match =
+    errStr.match(
+      /(?:suggested|replacement|alternative|use instead|use|recommend(?:ed)?)\s*[:"']?\s*(?:models\/)?(gemini-[a-zA-Z0-9.-]+)/i,
+    ) || errStr.match(/no longer available.*?models\/(gemini-[a-zA-Z0-9.-]+)/i);
+
+  if (match && match[1]) {
+    const suggested = match[1].trim();
+    if (/^gemini-[a-zA-Z0-9.-]+$/.test(suggested)) {
+      return suggested;
+    }
+  }
+  return null;
+}
+
+async function tryModel(
   model: string,
   imageData: string,
   mimeType: string,
@@ -549,6 +597,24 @@ async function requestModel(
   return rawText;
 }
 
+/** Try a single model with one automatic retry on 429 / 503. */
+async function requestModel(
+  model: string,
+  imageData: string,
+  mimeType: string,
+): Promise<string> {
+  try {
+    return await tryModel(model, imageData, mimeType);
+  } catch (firstErr: unknown) {
+    if (isRetryable(firstErr)) {
+      console.log(`[analyze] Retryable error on model=${model} — waiting 2 s before retry`);
+      await new Promise((r) => setTimeout(r, 2000));
+      return tryModel(model, imageData, mimeType);
+    }
+    throw firstErr;
+  }
+}
+
 router.post("/analyze", async (req, res) => {
   const parsed = AnalyzeScanBody.safeParse(req.body);
   if (!parsed.success) {
@@ -603,6 +669,9 @@ router.post("/analyze", async (req, res) => {
   }
 
   try {
+    const initialModels = resolveModels();
+    console.log(`[analyze] New request. Initial model list: [${initialModels.join(", ")}]`);
+
     let rawText: string | null = null;
     let successfulModel: string | null = null;
     const cascadeErrors: Array<{
@@ -610,34 +679,51 @@ router.post("/analyze", async (req, res) => {
       error: unknown;
       errorDetails: Record<string, unknown>;
     }> = [];
+    const queue = [...initialModels];
+    const triedModels = new Set<string>();
 
-    // Cascade through prioritized model fallback array
-    for (const model of FALLBACK_MODELS) {
+    // Cascade through the model queue; each attempt includes one 429/503 auto-retry
+    while (queue.length > 0) {
+      const model = queue.shift()!;
+      if (triedModels.has(model)) continue;
+      triedModels.add(model);
+
+      const attemptStart = Date.now();
       try {
-        console.log(`[analyze] Attempting analysis with model: ${model}...`);
+        console.log(`[analyze] Trying model=${model}...`);
         rawText = await requestModel(model, payloadBase64, payloadMimeType);
         successfulModel = model;
-        console.log(`[analyze] Successfully received response from model: ${model}`);
+        const elapsed = Date.now() - attemptStart;
+        console.log(`[analyze] model=${model} SUCCESS in ${elapsed} ms`);
         break;
       } catch (err: unknown) {
-        console.error(`[analyze] Model "${model}" failed or timed out:`);
-        console.error(err as unknown as Error);
-        const details = formatErrorDetails(err);
-        console.error(
-          `[analyze] Full error details for model "${model}":`,
-          safeStringify(details),
+        const elapsed = Date.now() - attemptStart;
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const rec = err as Record<string, unknown>;
+        const status = typeof rec?.status === "number" ? rec.status : "unknown";
+        console.warn(
+          `[analyze] model=${model} FAILED in ${elapsed} ms — status=${status} error=${errMsg}`,
         );
+        const details = formatErrorDetails(err);
+        console.error(`[analyze] Full error details for model="${model}":`, safeStringify(details));
         cascadeErrors.push({ model, error: err, errorDetails: details });
         req.log.warn(
           { model, err: details },
           `Gemini model ${model} failed; trying next fallback`,
         );
+
+        // If the error was a 404 offering a replacement model, try that suggested model next
+        const suggested = extractSuggestedModel(err);
+        if (suggested && !triedModels.has(suggested)) {
+          console.log(`[analyze] 404 suggested model "${suggested}" detected in error; trying it next`);
+          queue.unshift(suggested);
+        }
       }
     }
 
     if (!rawText) {
       console.error(
-        `[analyze] All ${FALLBACK_MODELS.length} Gemini models in fallback cascade failed.`,
+        `[analyze] All ${cascadeErrors.length} Gemini model(s) in fallback cascade failed.`,
       );
       console.error(
         "[analyze] Full raw cascade error breakdown:",
