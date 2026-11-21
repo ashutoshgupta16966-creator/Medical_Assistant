@@ -7,11 +7,11 @@ export type CustomFetchOptions = RequestInit & {
 // Must be longer than the backend worst case so the UI never cuts the
 // connection while the backend is still trying fallback models.
 //
-// Backend worst case  =  3 models × 20 s per model  =  60 s
+// Backend worst case  =  5 tiers × 35 s per model  =  175 s
 // Cold-start penalty  =  up to 50 s (Render free tier sleep)
-// This timeout        =  90 s  — safely above both.
+// This timeout        =  180 s (3 minutes) — safely above the worst case.
 // ---------------------------------------------------------------------------
-const FETCH_TIMEOUT_MS = 90_000;
+const FETCH_TIMEOUT_MS = 180_000;
 
 // How long to wait before retrying once on a cold-start failure (502 / 503 /
 // network error). This covers Render's free-tier wakeup delay (~50 s).

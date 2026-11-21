@@ -1,31 +1,27 @@
 import { Router, type IRouter } from "express";
 import { AnalyzeScanBody, AnalyzeScanResponse } from "@workspace/api-zod";
-import { GoogleGenAI } from "@google/genai";
 import sharp from "sharp";
+import {
+  FALLBACK_TIERS,
+  resolveFallbackTiers,
+  executeFallbackChain,
+  type TierLogEntry,
+} from "../lib/ai-fallback.js";
 
 const router: IRouter = Router();
 
 // ---------------------------------------------------------------------------
-// Model fallback list — in exact priority order requested:
-// 1. gemini-3.8-flash, 2. gemini-3.7-flash, 3. gemini-3.6-flash
-// Can be overridden by optional env variable GEMINI_MODELS (comma separated)
+// Fallback chain in exact order requested:
+// Tier 1: claude-opus-4.8 (Anthropic API ID: claude-opus-4-8)
+// Tier 2: claude-sonnet-4.6 (Anthropic API ID: claude-sonnet-4-6)
+// Tier 3: gemini-3.8-flash
+// Tier 4: gemini-3.7-flash
+// Tier 5: gemini-3.6-flash
+//
+// Note: Anthropic official API uses hyphens in IDs (claude-opus-4-8, claude-sonnet-4-6).
+// The list can be overridden via optional env variable AI_MODELS or GEMINI_MODELS.
 // ---------------------------------------------------------------------------
-const DEFAULT_MODELS = ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"];
-
-function resolveModels(): readonly string[] {
-  const envOverride = process.env.GEMINI_MODELS;
-  if (envOverride && envOverride.trim()) {
-    return envOverride
-      .split(",")
-      .map((m) => m.trim())
-      .filter(Boolean);
-  }
-  return DEFAULT_MODELS;
-}
-
-// Per-attempt timeout. Frontend signal is set to 90 s in custom-fetch.ts,
-// which is comfortably above the worst-case backend time.
-const MODEL_TIMEOUT_MS = 20_000; // 20 s per model
+export const ROUTE_FALLBACK_TIERS = FALLBACK_TIERS;
 
 const analysisPrompt = `You are a careful medical information assistant analyzing one uploaded image from India. It may show a medicine strip, medicine box, prescription, or lab report.
 
@@ -283,7 +279,6 @@ function normalizeScanResponse(candidate: Record<string, unknown>) {
 }
 
 // Threshold above which an uploaded image base64 payload is considered excessively large
-// 800 KB raw byte size corresponds to ~1.07 MB base64 string
 const LARGE_IMAGE_THRESHOLD_BYTES = 800 * 1024;
 const MAX_IMAGE_DIMENSION = 1536;
 const JPEG_COMPRESSION_QUALITY = 82;
@@ -299,7 +294,7 @@ interface ProcessedImagePayload {
 /**
  * Downscales and compresses base64 image data if the payload is excessively large
  * (either in byte size or resolution dimensions), reducing network payload size
- * for faster transmission to the Gemini API.
+ * for faster transmission to AI models.
  */
 async function optimizeImageIfLarge(
   base64Data: string,
@@ -333,7 +328,7 @@ async function optimizeImageIfLarge(
     );
 
     const pipeline = sharp(inputBuffer)
-      .rotate() // Auto-orient according to EXIF
+      .rotate()
       .resize({
         width: MAX_IMAGE_DIMENSION,
         height: MAX_IMAGE_DIMENSION,
@@ -350,14 +345,12 @@ async function optimizeImageIfLarge(
         .toBuffer();
       targetMime = "image/webp";
     } else {
-      // Default to JPEG for optimal text clarity and payload compression
       compressedBuffer = await pipeline
         .jpeg({ quality: JPEG_COMPRESSION_QUALITY, mozjpeg: true })
         .toBuffer();
       targetMime = "image/jpeg";
     }
 
-    // Only adopt compressed buffer if it produced a smaller payload
     if (compressedBuffer.length < originalBytes) {
       const finalBytes = compressedBuffer.length;
       const reduction = (((originalBytes - finalBytes) / originalBytes) * 100).toFixed(1);
@@ -396,225 +389,6 @@ async function optimizeImageIfLarge(
   }
 }
 
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  controller?: AbortController,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => {
-          if (controller && !controller.signal.aborted) {
-            controller.abort(new Error("ANALYSIS_TIMEOUT"));
-          }
-          reject(new Error("ANALYSIS_TIMEOUT"));
-        }, timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-/**
- * Safely extracts error details including status code, response body, cause, etc.,
- * avoiding TS2352 errors by casting through `unknown`.
- */
-function formatErrorDetails(err: unknown): Record<string, unknown> {
-  if (err instanceof Error) {
-    const errorRec = err as unknown as Record<string, unknown>;
-    const details: Record<string, unknown> = {
-      message: err.message,
-      name: err.name,
-      stack: err.stack,
-    };
-    if ("cause" in err) {
-      details.cause = (err as unknown as { cause: unknown }).cause;
-    }
-    for (const key of Object.keys(errorRec)) {
-      try {
-        const val = errorRec[key];
-        if (typeof val !== "function") {
-          details[key] = val;
-        }
-      } catch {
-        // Ignore unreadable properties
-      }
-    }
-    return details;
-  }
-  if (typeof err === "object" && err !== null) {
-    return err as unknown as Record<string, unknown>;
-  }
-  return { error: String(err) };
-}
-
-/**
- * Safe stringifier that tolerates circular structures.
- */
-function safeStringify(value: unknown): string {
-  try {
-    const seen = new WeakSet();
-    return JSON.stringify(
-      value,
-      (_key, val) => {
-        if (typeof val === "object" && val !== null) {
-          if (seen.has(val)) return "[Circular]";
-          seen.add(val);
-        }
-        return val;
-      },
-      2,
-    );
-  } catch {
-    return String(value);
-  }
-}
-
-/** Returns true if the error looks like a transient overload (429 / 503). */
-function isRetryable(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-  const rec = err as Record<string, unknown>;
-  const status = typeof rec?.status === "number" ? rec.status : 0;
-  return (
-    status === 429 ||
-    status === 503 ||
-    msg.includes("429") ||
-    msg.includes("503") ||
-    msg.includes("quota") ||
-    msg.includes("rate limit") ||
-    msg.includes("overloaded")
-  );
-}
-
-/** Extracts any model name suggested in a 404 / 'no longer available' error message. */
-function extractSuggestedModel(err: unknown): string | null {
-  if (!err) return null;
-  const errStr = err instanceof Error ? `${err.message} ${(err as Error & { cause?: unknown }).cause ?? ""}` : String(err);
-  const rec = typeof err === "object" && err !== null ? (err as Record<string, unknown>) : {};
-  const status = typeof rec.status === "number" ? rec.status : undefined;
-  const is404 =
-    status === 404 ||
-    /404|not[ _]?found|no longer available|deprecated/i.test(errStr);
-  if (!is404) return null;
-
-  const match =
-    errStr.match(
-      /(?:suggested|replacement|alternative|use instead|use|recommend(?:ed)?)\s*[:"']?\s*(?:models\/)?(gemini-[a-zA-Z0-9.-]+)/i,
-    ) || errStr.match(/no longer available.*?models\/(gemini-[a-zA-Z0-9.-]+)/i);
-
-  if (match && match[1]) {
-    const suggested = match[1].trim();
-    if (/^gemini-[a-zA-Z0-9.-]+$/.test(suggested)) {
-      return suggested;
-    }
-  }
-  return null;
-}
-
-async function tryModel(
-  model: string,
-  imageData: string,
-  mimeType: string,
-): Promise<string> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error("GEMINI_API_KEY_MISSING");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const abortController = new AbortController();
-
-  let response: Awaited<ReturnType<typeof ai.models.generateContent>>;
-  try {
-    response = await withTimeout(
-      ai.models.generateContent({
-        model,
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { inlineData: { mimeType, data: imageData } },
-              { text: analysisPrompt },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: "application/json",
-          temperature: 0.1,
-          abortSignal: abortController.signal,
-          httpOptions: {
-            timeout: MODEL_TIMEOUT_MS,
-          },
-        },
-      }),
-      MODEL_TIMEOUT_MS,
-      abortController,
-    );
-  } catch (sdkError: unknown) {
-    if (abortController.signal.aborted) {
-      console.warn(
-        `[analyze] Request for model=${model} aborted after timeout (${MODEL_TIMEOUT_MS}ms)`,
-      );
-      throw new Error("ANALYSIS_TIMEOUT");
-    }
-    console.error(`[analyze] Gemini SDK call failed for model=${model}:`);
-    console.error(sdkError as unknown as Error);
-    console.error(
-      `[analyze] Gemini SDK full error details for model=${model}:`,
-      safeStringify(formatErrorDetails(sdkError)),
-    );
-    throw sdkError;
-  }
-
-  const responseRec = response as unknown as Record<string, unknown>;
-  const rawText: string | undefined =
-    typeof responseRec.text === "function"
-      ? (responseRec.text as unknown as () => string | undefined)()
-      : (responseRec.text as unknown as string | undefined);
-
-  console.log(
-    `[analyze] Raw Gemini response from model=${model} (${rawText?.length ?? 0} chars):`,
-    rawText ? (rawText.length > 500 ? `${rawText.slice(0, 500)}...` : rawText) : "<empty>",
-  );
-
-  if (!rawText || !rawText.trim()) {
-    console.error(
-      `[analyze] EMPTY_MODEL_RESPONSE from model=${model}. Full raw response object:`,
-      safeStringify({
-        candidates: responseRec.candidates,
-        promptFeedback: responseRec.promptFeedback,
-        usageMetadata: responseRec.usageMetadata,
-        rawResponse: responseRec,
-      }),
-    );
-    throw new Error(`EMPTY_MODEL_RESPONSE (${model})`);
-  }
-
-  return rawText;
-}
-
-/** Try a single model with one automatic retry on 429 / 503. */
-async function requestModel(
-  model: string,
-  imageData: string,
-  mimeType: string,
-): Promise<string> {
-  try {
-    return await tryModel(model, imageData, mimeType);
-  } catch (firstErr: unknown) {
-    if (isRetryable(firstErr)) {
-      console.log(`[analyze] Retryable error on model=${model} — waiting 2 s before retry`);
-      await new Promise((r) => setTimeout(r, 2000));
-      return tryModel(model, imageData, mimeType);
-    }
-    throw firstErr;
-  }
-}
-
 router.post("/analyze", async (req, res) => {
   const parsed = AnalyzeScanBody.safeParse(req.body);
   if (!parsed.success) {
@@ -625,7 +399,6 @@ router.post("/analyze", async (req, res) => {
   const { imageData, mimeType } = parsed.data;
   const base64 = imageData.replace(/^data:[^;]+;base64,/, "");
 
-  // Log image details before every request so size issues are immediately diagnosable
   const estimatedBytes = Math.ceil((base64.length * 3) / 4);
   const estimatedKB = (estimatedBytes / 1024).toFixed(1);
   console.log(
@@ -633,8 +406,8 @@ router.post("/analyze", async (req, res) => {
   );
   req.log.info({ mimeType, estimatedBytes, base64Length: base64.length }, "Incoming image details");
 
-  // Enforce ~4 MB image cap (Vercel serverless payload ceiling is 4.5 MB total)
-  const MAX_BYTES = 4 * 1024 * 1024; // 4 MB
+  // Enforce 4 MB image cap
+  const MAX_BYTES = 4 * 1024 * 1024;
   if (estimatedBytes > MAX_BYTES) {
     console.error(`[analyze] Image too large: ${estimatedKB} KB exceeds 4 MB limit. Returning 413.`);
     res.status(413).json({
@@ -643,7 +416,6 @@ router.post("/analyze", async (req, res) => {
     return;
   }
 
-  // Downscale and compress image payload if excessively large to accelerate transmission to Gemini
   const optimized = await optimizeImageIfLarge(base64, mimeType);
   const payloadBase64 = optimized.data;
   const payloadMimeType = optimized.mimeType;
@@ -655,126 +427,73 @@ router.post("/analyze", async (req, res) => {
         finalBytes: optimized.finalBytes,
         mimeType: payloadMimeType,
       },
-      "Image downscaled and compressed for Gemini transmission",
+      "Image downscaled and compressed for AI transmission",
     );
   }
 
-  if (!process.env.GEMINI_API_KEY) {
-    console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
-    req.log.error("Gemini API key is not configured");
+  // Verify at least one provider key exists
+  if (!process.env.GEMINI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
+    console.error("[analyze] Neither GEMINI_API_KEY nor ANTHROPIC_API_KEY is set in environment variables.");
+    req.log.error("AI API keys are not configured");
     res.status(502).json({
-      error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry.",
+      error: "Analysis is not connected yet. Add GEMINI_API_KEY or ANTHROPIC_API_KEY in Secrets, then retry.",
     });
     return;
   }
 
   try {
-    const initialModels = resolveModels();
-    console.log(`[analyze] New request. Initial model list: [${initialModels.join(", ")}]`);
+    const tiers = resolveFallbackTiers();
+    console.log(`[analyze] Request started. Active fallback tiers: [${tiers.map((t) => t.id).join(", ")}]`);
 
-    let rawText: string | null = null;
-    let successfulModel: string | null = null;
-    const cascadeErrors: Array<{
-      model: string;
-      error: unknown;
-      errorDetails: Record<string, unknown>;
-    }> = [];
-    const queue = [...initialModels];
-    const triedModels = new Set<string>();
-
-    // Cascade through the model queue; each attempt includes one 429/503 auto-retry
-    while (queue.length > 0) {
-      const model = queue.shift()!;
-      if (triedModels.has(model)) continue;
-      triedModels.add(model);
-
-      const attemptStart = Date.now();
-      try {
-        console.log(`[analyze] Trying model=${model}...`);
-        rawText = await requestModel(model, payloadBase64, payloadMimeType);
-        successfulModel = model;
-        const elapsed = Date.now() - attemptStart;
-        console.log(`[analyze] model=${model} SUCCESS in ${elapsed} ms`);
-        break;
-      } catch (err: unknown) {
-        const elapsed = Date.now() - attemptStart;
-        const errMsg = err instanceof Error ? err.message : String(err);
-        const rec = err as Record<string, unknown>;
-        const status = typeof rec?.status === "number" ? rec.status : "unknown";
-        console.warn(
-          `[analyze] model=${model} FAILED in ${elapsed} ms — status=${status} error=${errMsg}`,
+    const chainResult = await executeFallbackChain(tiers, {
+      systemPrompt: analysisPrompt,
+      originalUserPrompt: "Please analyze this medical image carefully and return the required JSON.",
+      imagePayload: {
+        mimeType: payloadMimeType,
+        base64: payloadBase64,
+      },
+      onTierLog: (log: TierLogEntry) => {
+        // Backend console logging only - never logs user input, patient data, or keys
+        console.log(
+          `[analyze] Tier: ${log.model} (${log.provider}) | ` +
+            `Start: ${log.startIso} | End: ${log.endIso} | Elapsed: ${log.elapsedMs}ms | ` +
+            `Result: ${log.result}${log.errorType ? ` (${log.errorType})` : ""} | ` +
+            `Chars: ${log.charsCollectedSoFar} | Continuation: ${log.continuationUsed}`,
         );
-        const details = formatErrorDetails(err);
-        console.error(`[analyze] Full error details for model="${model}":`, safeStringify(details));
-        cascadeErrors.push({ model, error: err, errorDetails: details });
-        req.log.warn(
-          { model, err: details },
-          `Gemini model ${model} failed; trying next fallback`,
+        req.log.info(
+          {
+            model: log.model,
+            provider: log.provider,
+            elapsedMs: log.elapsedMs,
+            result: log.result,
+            charsCollectedSoFar: log.charsCollectedSoFar,
+            continuationUsed: log.continuationUsed,
+          },
+          "Analyze tier attempt completed",
         );
+      },
+    });
 
-        // If the error was a 404 offering a replacement model, try that suggested model next
-        const suggested = extractSuggestedModel(err);
-        if (suggested && !triedModels.has(suggested)) {
-          console.log(`[analyze] 404 suggested model "${suggested}" detected in error; trying it next`);
-          queue.unshift(suggested);
-        }
-      }
-    }
+    console.log(
+      `[analyze] Total request elapsed: ${chainResult.totalElapsedMs}ms | ` +
+        `Chars collected: ${chainResult.text.length} | Completed: ${chainResult.completed}`,
+    );
 
-    if (!rawText) {
-      console.error(
-        `[analyze] All ${cascadeErrors.length} Gemini model(s) in fallback cascade failed.`,
-      );
-      console.error(
-        "[analyze] Full raw cascade error breakdown:",
-        safeStringify(cascadeErrors),
-      );
-      for (const item of cascadeErrors) {
-        console.error(`[analyze] Failure on ${item.model}:`, item.error as unknown as Error);
-        console.error(`[analyze] Raw details for ${item.model}:`, safeStringify(item.errorDetails));
-      }
-      req.log.error(
-        { cascadeErrors },
-        "All Gemini fallback models failed for image analysis",
-      );
-
-      const hasTimeout = cascadeErrors.some((e) => {
-        const err = e.error as unknown as Error;
-        return (
-          err?.message === "ANALYSIS_TIMEOUT" ||
-          err?.name === "AbortError" ||
-          err?.message?.includes("aborted") ||
-          err?.message?.includes("timeout")
-        );
-      });
-      if (hasTimeout) {
-        res.status(408).json({
-          error: "Image analysis timed out across all models. Please retry.",
-        });
-        return;
-      }
-
+    if (!chainResult.text || chainResult.text.trim().length === 0) {
+      console.error("[analyze] All AI tiers failed with empty text. Returning fallback error.");
+      req.log.error({ tiers: tiers.map((t) => t.id) }, "All AI analyze tiers failed with empty text");
       res.status(502).json({
         error: "We couldn't analyze that image right now. Please try again.",
       });
       return;
     }
 
-
     let candidateData: Record<string, unknown>;
     try {
-      candidateData = parseJsonSafely(rawText);
+      candidateData = parseJsonSafely(chainResult.text);
     } catch (parseError: unknown) {
-      console.error(
-        `[analyze] JSON.parse failed for response from model=${successfulModel}. Full raw Gemini text:`,
-        rawText,
-      );
-      console.error("[analyze] JSON parse error:", parseError as unknown as Error);
-      console.error(parseError as unknown as Error);
-      req.log.error(
-        { err: formatErrorDetails(parseError), rawText, model: successfulModel },
-        "Gemini returned invalid JSON",
-      );
+      console.error("[analyze] JSON parse error on returned text:", parseError instanceof Error ? parseError.message : parseError);
+      req.log.error({ err: parseError, rawText: chainResult.text }, "AI returned invalid JSON");
       res.status(502).json({
         error: "We couldn't read that image clearly. Please try a sharper photo.",
       });
@@ -784,23 +503,8 @@ router.post("/analyze", async (req, res) => {
     const normalized = normalizeScanResponse(candidateData);
     res.json(normalized);
   } catch (error: unknown) {
-    const errObj = error as unknown as Error;
-    if (errObj?.message === "GEMINI_API_KEY_MISSING") {
-      console.error("[analyze] GEMINI_API_KEY is not set in environment variables.");
-      req.log.error({ err: formatErrorDetails(error) }, "Gemini API key is not configured");
-      res.status(502).json({
-        error: "Analysis is not connected yet. Add GEMINI_API_KEY in Secrets, then retry.",
-      });
-      return;
-    }
-
-    console.error("[analyze] Unhandled error during medical image analysis:", error);
-    console.error(error as unknown as Error);
-    console.error(
-      "[analyze] Full unhandled error details:",
-      safeStringify(formatErrorDetails(error)),
-    );
-    req.log.error({ err: formatErrorDetails(error) }, "Medical image analysis failed");
+    console.error("[analyze] Unhandled error during medical image analysis:", error instanceof Error ? error.message : error);
+    req.log.error({ err: error }, "Medical image analysis failed");
     res.status(502).json({
       error: "We couldn't analyze that image right now. Please try again.",
     });
